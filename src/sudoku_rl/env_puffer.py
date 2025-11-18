@@ -1,10 +1,12 @@
 from __future__ import annotations
+from typing import Counter
 
 import numpy as np
-import gym 
 import pufferlib
+import gymnasium
 
 from .env import SudokuEnv
+from .puzzle import sample_puzzle
 
 
 class SudokuPufferEnv(pufferlib.PufferEnv):
@@ -19,6 +21,7 @@ class SudokuPufferEnv(pufferlib.PufferEnv):
     def __init__(
         self,
         render_mode: str = "ansi",
+        difficulty: str = "easy",
         buf=None,
         seed: int = 0,
         max_steps: int = 200,
@@ -40,18 +43,20 @@ class SudokuPufferEnv(pufferlib.PufferEnv):
         self._seed = seed
         self.max_steps = max_steps
         self.env = SudokuEnv(initial_board=initial_board, max_steps=max_steps)
+        self.difficulty = difficulty
 
         # ---- Let Puffer allocate buffers ----
         super().__init__(buf)
 
     # ---- Required API: reset/step/render/close ----
-
     def reset(self, seed: int | None = None):
         """Reset SudokuEnv and write into Puffer buffers."""
         if seed is None:
             seed = self._seed
 
-        board = self.env.reset(seed=seed)
+        initial_board = sample_puzzle(difficulty=self.difficulty, seed=seed)
+
+        board = self.env.reset(seed=seed, initial_board=initial_board)
 
         # observations shape: (num_agents, 81) => (1, 81)
         self.observations[0, :] = board.reshape(-1)
@@ -115,23 +120,62 @@ class SudokuPufferEnv(pufferlib.PufferEnv):
 
 
 if __name__ == "__main__":
-    # Run SudokuPufferEnv standalone, like PySquared
-    env = SudokuPufferEnv()
-    obs, info = env.reset()
+    # Standalone random-rollout debug for SudokuPufferEnv
+    import time
+    import numpy as np
+    from collections import Counter
+
+    difficulty = "super-easy"  
+    seed = 0 # easiest puzzle
+    env = SudokuPufferEnv(difficulty=difficulty)
+    obs, info = env.reset(seed=seed)
     steps = 0
 
     CACHE = 1024
-    # Random actions (mostly illegal, just for perf testing / sanity)
-    actions = np.random.randint(0, 9 * 9 * 9, (CACHE, 1))
+    # Pre-generate random actions in [0, 9*9*9)
+    actions = np.random.randint(
+        0,
+        env.single_action_space.n,
+        size=(CACHE, 1),
+        dtype=np.int64,
+    )
 
-    import time
+    rewards = []
+    reasons = Counter()
+    episodes = 0
 
     start = time.time()
-    while time.time() - start < 5:
-        obs, rew, term, trunc, info = env.step(actions[steps % CACHE])
+    DURATION = 5.0  # seconds
+
+    while time.time() - start < DURATION:
+        # Optional: uncomment if you want to inspect the board
+        # print("board:\n", env.env.board)
+
+        action = actions[steps % CACHE]
+        obs, rew, term, trunc, infos = env.step(action)
         steps += 1
 
-    print("SudokuPufferEnv SPS:", int(steps / (time.time() - start)))
+        # rew is shape (1,) from Puffer; store scalar
+        rewards.append(float(rew[0]))
+
+        info0 = infos[0]
+        if term[0] or trunc[0]:
+            if info0.get("solved"):
+                reason = "solved"
+            elif info0.get("timeout"):
+                reason = "timeout"
+            else:
+                reason = "other"
+            reasons[reason] += 1
+            episodes += 1
+            obs, info = env.reset()
+
+    elapsed = time.time() - start
+    print("SudokuPufferEnv SPS:", int(steps / elapsed))
+    print("Episodes:", episodes)
+    print(f"Succes rate: {100.0 * reasons['solved'] / episodes:.1f}%")
+    print("Reward mean/std:", np.mean(rewards), np.std(rewards))
+    print("Done reasons:", reasons)
     print("Last board:")
     print(env.render())
 

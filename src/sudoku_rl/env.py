@@ -53,9 +53,13 @@ class SudokuEnv:
 
     # ------------- Public API -------------
 
-    def reset(self, seed: Optional[int] = None) -> Board:
+    def reset(self, seed: Optional[int] = None, initial_board: Optional[Board] = None) -> Board:
+        if initial_board is not None:
+            if initial_board.shape != (self.n_rows, self.n_cols):
+                raise ValueError(f"initial_board must be 9x9, got {initial_board.shape}")
+            self.initial_board = initial_board.copy()
         # seed kept for later compatibility, not used yet
-        self.board = self.initial_board.copy()
+        self.board = self.initial_board.copy()  
         self.steps = 0
         return self.board.copy()
 

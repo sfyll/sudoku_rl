@@ -1,6 +1,7 @@
 import numpy as np
 
 from sudoku_rl import SudokuEnv
+from sudoku_rl.puzzle import sample_puzzle
 
 
 def make_simple_puzzle():
@@ -98,3 +99,12 @@ def test_solved_detection():
     assert done is True
     assert reward > 0.9  # base -0.01 + shaping + solve bonus
 
+
+def test_env_handles_dataset_puzzle():
+    board = sample_puzzle("super-easy", seed=0)
+    env = SudokuEnv(initial_board=board)
+
+    obs = env.reset()
+
+    assert np.array_equal(obs, board)
+    assert obs.dtype == np.int8
