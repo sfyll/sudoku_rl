@@ -21,10 +21,10 @@ class SudokuPufferEnv(pufferlib.PufferEnv):
     def __init__(
         self,
         render_mode: str = "ansi",
-        difficulty: str = "easy",
+        difficulty: str = "super-easy",
         buf=None,
         seed: int = 0,
-        max_steps: int = 200,
+        max_steps: int = 10_000,
         initial_board=None,
     ):
         # ---- Required attributes BEFORE super().__init__ ----
@@ -54,7 +54,7 @@ class SudokuPufferEnv(pufferlib.PufferEnv):
         if seed is None:
             seed = self._seed
 
-        initial_board = sample_puzzle(difficulty=self.difficulty, seed=seed)
+        initial_board = sample_puzzle(difficulty=self.difficulty)
 
         board = self.env.reset(seed=seed, initial_board=initial_board)
 
@@ -79,6 +79,7 @@ class SudokuPufferEnv(pufferlib.PufferEnv):
 
         # Delegate all Sudoku logic to our Phase 2 env
         board, reward, done, info = self.env.step(atn)
+        print("reward:", reward, "done:", done, "info:", info)
 
         # Write back into Puffer buffers (in-place)
         self.observations[0, :] = board.reshape(-1)
