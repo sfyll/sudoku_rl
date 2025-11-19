@@ -1,8 +1,11 @@
+import numpy as np
 import torch
 import torch.nn as nn
 import pufferlib.vector
 import pufferlib.ocean
 from pufferlib import pufferl
+
+from .env import legal_action_mask
 
 class SudokuMLP(nn.Module):
     """
@@ -46,11 +49,30 @@ class SudokuMLP(nn.Module):
         hidden = self.net(x)
         logits = self.action_head(hidden)
         values = self.value_head(hidden)
+
+        mask = self._build_action_mask(observations, logits.device)
+        logits = logits.masked_fill(~mask, float("-inf"))
         return logits, values
 
     # Puffer likes .forward to exist; we just alias to forward_eval.
     def forward(self, observations, state=None):
         return self.forward_eval(observations, state)
+
+    def _build_action_mask(self, observations, device):
+        obs_np = observations.detach().cpu().numpy()
+        masks = []
+        for obs in obs_np:
+            board = obs.reshape(9, 9).astype(np.int8)
+            print(f"board{board}")
+            mask_np = legal_action_mask(board)
+            print(f"mask{mask_np}")
+            if not mask_np.any():
+                mask_np[:] = True
+            print(f"mask_2{mask_np}")
+            masks.append(mask_np)
+
+        mask = torch.as_tensor(np.stack(masks), device=device, dtype=torch.bool)
+        return mask
 
 
 if __name__ == "__main__":
@@ -77,3 +99,15 @@ if __name__ == "__main__":
     # Step env once with the sampled action, just to see it runs
     next_obs, rew, done, trunc, infos = env.step(action.detach().cpu().numpy().reshape(1,))
     print("reward:", float(rew[0]), "done:", bool(done[0]))
+
+    # --- Quick visual mask sanity check ---
+    mask = policy._build_action_mask(obs_t, logits.device)
+    legal_indices = torch.nonzero(mask[0]).squeeze(-1).tolist()
+    print(f"Legal actions: {len(legal_indices)} / 729")
+
+    mask_cube = mask[0].reshape(9, 9, 9)
+    counts = mask_cube.sum(dim=2)
+    print("Legal move counts per cell (0 means filled):")
+    for r in range(9):
+        row_counts = " ".join(f"{int(c.item())}" for c in counts[r])
+        print(row_counts)

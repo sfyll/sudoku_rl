@@ -2,6 +2,7 @@ import numpy as np
 
 from sudoku_rl import SudokuEnv
 from sudoku_rl.puzzle import sample_puzzle
+from sudoku_rl.env import legal_action_mask
 
 
 def make_simple_puzzle():
@@ -108,3 +109,17 @@ def test_env_handles_dataset_puzzle():
 
     assert np.array_equal(obs, board)
     assert obs.dtype == np.int8
+
+
+def test_legal_action_mask_matches_env_rules():
+    puzzle = make_simple_puzzle()
+    mask = legal_action_mask(puzzle)
+
+    env = SudokuEnv(initial_board=puzzle)
+    env.reset()
+
+    legal_action = env.encode_action(row=0, col=2, digit=1)
+    illegal_action = env.encode_action(row=0, col=2, digit=5)
+
+    assert mask[legal_action]
+    assert not mask[illegal_action]

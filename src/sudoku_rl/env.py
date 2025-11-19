@@ -207,3 +207,34 @@ class SudokuEnv:
             return False
         return self._board_valid()
 
+
+def legal_action_mask(board: Board) -> np.ndarray:
+    """Return a boolean mask of legal (row, col, digit) actions for `board`."""
+    if board.shape != (9, 9):
+        raise ValueError(f"board must be 9x9, got {board.shape}")
+
+    mask = np.zeros(9 * 9 * 9, dtype=bool)
+
+    for row in range(9):
+        for col in range(9):
+            if board[row, col] != 0:
+                continue
+
+            row_vals = board[row, :]
+            col_vals = board[:, col]
+            block_row = (row // 3) * 3
+            block_col = (col // 3) * 3
+            block_vals = board[block_row:block_row + 3, block_col:block_col + 3]
+
+            for digit in range(1, 10):
+                if digit in row_vals:
+                    continue
+                if digit in col_vals:
+                    continue
+                if digit in block_vals:
+                    continue
+
+                action = row * (9 * 9) + col * 9 + (digit - 1)
+                mask[action] = True
+
+    return mask

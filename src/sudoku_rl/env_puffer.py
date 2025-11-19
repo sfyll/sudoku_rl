@@ -79,7 +79,6 @@ class SudokuPufferEnv(pufferlib.PufferEnv):
 
         # Delegate all Sudoku logic to our Phase 2 env
         board, reward, done, info = self.env.step(atn)
-        print("reward:", reward, "done:", done, "info:", info)
 
         # Write back into Puffer buffers (in-place)
         self.observations[0, :] = board.reshape(-1)
