@@ -13,15 +13,17 @@ import numpy as np
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = PROJECT_ROOT / "data" / "processed"
-AGGREGATE_FILE = DATA_DIR / "sudoku_all_filtered.csv"
 SPLIT_FILES = {
-    "super_easy": DATA_DIR / "sudoku_super_easy.csv",
+    "tiny": DATA_DIR / "sudoku_tiny.csv",
+    "very_easy": DATA_DIR / "sudoku_very_easy.csv",
     "easy": DATA_DIR / "sudoku_easy.csv",
+    "moderate": DATA_DIR / "sudoku_moderate.csv",
     "medium": DATA_DIR / "sudoku_medium.csv",
+    "tricky": DATA_DIR / "sudoku_tricky.csv",
     "hard": DATA_DIR / "sudoku_hard.csv",
 }
 
-SUPPORTED_DIFFICULTIES = ("super_easy", "easy", "medium", "hard")
+SUPPORTED_DIFFICULTIES = tuple(SPLIT_FILES.keys())
 
 
 def _string_to_board(s: str) -> np.ndarray:
@@ -45,8 +47,8 @@ def _normalize_difficulty(label: str) -> str:
     return normalized
 
 
-def _load_from_csv(path: Path, override_difficulty: Optional[str] = None) -> Dict[str, List[str]]:
-    data: Dict[str, List[str]] = {}
+def _load_from_csv(path: Path, difficulty: str) -> List[str]:
+    puzzles: List[str] = []
     with path.open(newline="") as f:
         reader = csv.DictReader(f)
         if "puzzle" not in reader.fieldnames:
@@ -55,34 +57,19 @@ def _load_from_csv(path: Path, override_difficulty: Optional[str] = None) -> Dic
             puzzle = row["puzzle"].strip()
             if len(puzzle) != 81:
                 raise ValueError(f"Puzzle '{puzzle}' in {path} must be length 81")
-            diff = override_difficulty or row.get("difficulty", "")
-            if not diff:
-                raise ValueError(f"CSV file {path} missing difficulty information")
-            normalized = _normalize_difficulty(diff)
-            data.setdefault(normalized, []).append(puzzle)
-    return data
-
-
-def _load_split_files() -> Dict[str, List[str]]:
-    merged: Dict[str, List[str]] = {d: [] for d in SUPPORTED_DIFFICULTIES}
-    for difficulty, csv_path in SPLIT_FILES.items():
-        if not csv_path.exists():
-            raise FileNotFoundError(f"Expected CSV file not found: {csv_path}")
-        file_data = _load_from_csv(csv_path, override_difficulty=difficulty)
-        merged[difficulty].extend(file_data[difficulty])
-    return merged
+            puzzles.append(puzzle)
+    if not puzzles:
+        raise ValueError(f"No puzzles loaded for difficulty '{difficulty}' from {path}")
+    return puzzles
 
 
 @lru_cache(maxsize=1)
 def _load_puzzle_pools() -> Dict[str, List[str]]:
-    if AGGREGATE_FILE.exists():
-        pools = _load_from_csv(AGGREGATE_FILE)
-    else:
-        pools = _load_split_files()
-
-    for difficulty in SUPPORTED_DIFFICULTIES:
-        if difficulty not in pools or not pools[difficulty]:
-            raise ValueError(f"No puzzles loaded for difficulty '{difficulty}'")
+    pools: Dict[str, List[str]] = {}
+    for difficulty, csv_path in SPLIT_FILES.items():
+        if not csv_path.exists():
+            raise FileNotFoundError(f"Expected CSV file not found: {csv_path}")
+        pools[difficulty] = _load_from_csv(csv_path, difficulty)
     return pools
 
 

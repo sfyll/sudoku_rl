@@ -37,25 +37,34 @@ df["clues"] = 81 - df["zeros"]
 
 print(f"Zero Counted")
 
+EMPTY_BINS = [
+    ("tiny", 0, 4),
+    ("very_easy", 5, 8),
+    ("easy", 9, 16),
+    ("moderate", 17, 25),
+    ("medium", 26, 35),
+    ("tricky", 36, 45),
+    ("hard", 46, 60),
+]
+
 def assign_difficulty(n_zeros: int) -> str:
-    if n_zeros <= 4:
-        return "super_easy"
-    elif n_zeros <= 25:
-        return "easy"
-    elif n_zeros <= 45:
-        return "medium"
-    elif n_zeros <= 60:
-        return "hard"
+    for name, lo, hi in EMPTY_BINS:
+        if lo <= n_zeros <= hi:
+            return name
+    return "other"
 
 df["difficulty"] = df["zeros"].apply(assign_difficulty)
 
 # ---- 4. Optionally subsample per difficulty ----
 
 MAX_PER = {
-    "super_easy": 5_000,
-    "easy": 50_000,
-    "medium": 50_000,
-    "hard": 50_000,
+    "tiny": 10_000,
+    "very_easy": 20_000,
+    "easy": 100_000,
+    "moderate": 100_000,
+    "medium": 100_000,
+    "tricky": 100_000,
+    "hard": 100_000,
 }
 
 dfs = []
@@ -65,6 +74,10 @@ print(f"Iterating thourgh the sudoku")
 
 for diff, max_n in MAX_PER.items():
     sub = df[df["difficulty"] == diff]
+    if diff == "other":
+        continue
+    if len(sub) == 0:
+        continue
     if len(sub) == 0:
         continue
     if len(sub) > max_n:
@@ -83,4 +96,3 @@ if dfs:
     print(f"Wrote combined filtered dataset to {combined_path}")
 else:
     print("No puzzles matched any difficulty thresholds.")
-
