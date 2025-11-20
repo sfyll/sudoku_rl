@@ -1,6 +1,30 @@
 # src/sudoku_rl/train_with_pufferl.py
+import warnings
+import logging
+# Mute noisy warnings before importing torch
+warnings.filterwarnings("ignore", message=".*pynvml package is deprecated.*", category=FutureWarning)
+warnings.filterwarnings("ignore", message="User provided device_type of 'cuda', but CUDA is not available.*", category=UserWarning)
+warnings.filterwarnings("ignore", message="Redirects are currently not supported in Windows or MacOs.*", category=UserWarning)
+# Silence torch elastic redirect logger noise
+logging.getLogger("torch.distributed.elastic.multiprocessing.redirects").setLevel(logging.ERROR)
+import psutil
+
+# Monkeypatch psutil.cpu_count to avoid macOS permission errors inside PuffeRL's Utilization thread
+_psutil_cpu_count = psutil.cpu_count
+def _safe_cpu_count(*args, **kwargs):
+    try:
+        return _psutil_cpu_count(*args, **kwargs)
+    except Exception:
+        return os.cpu_count() or 1
+psutil.cpu_count = _safe_cpu_count
+
 import argparse
 import sys
+import os
+import numpy as np
+import torch
+import time
+from torch.utils.tensorboard import SummaryWriter
 
 import pufferlib.vector
 
@@ -12,6 +36,31 @@ from .sudoku_mlp import SudokuMLP
 from .env_puffer import SudokuPufferEnv
 
 import imageio
+
+# Heuristic per-difficulty step caps: ~9 actions per empty cell with a small buffer.
+DIFFICULTY_MAX_STEPS = {
+    "super-easy": 60,   # <=4 holes  -> ~36 steps, give some slack
+    "easy": 300,        # <=25 holes -> ~225 steps
+    "medium": 540,      # <=45 holes -> ~405 steps
+    "hard": 720,        # <=60 holes -> ~540 steps
+}
+
+
+class TensorboardLogger:
+    """Minimal logger that matches PuffeRL's expected interface."""
+
+    def __init__(self, logdir: str):
+        self.writer = SummaryWriter(logdir)
+        self.run_id = str(int(time.time()))
+
+    def log(self, logs, step: int):
+        for k, v in logs.items():
+            if isinstance(v, (int, float)):
+                self.writer.add_scalar(k, v, step)
+
+    def close(self, model_path=None):
+        self.writer.flush()
+        self.writer.close()
 
 def main():
     parser = argparse.ArgumentParser()
@@ -32,7 +81,13 @@ def main():
     parser.add_argument("--record_frames_count", type=int, default=200, help="How many frames to capture when recording")
     parser.add_argument("--record_gif_path", type=str, default="experiments/sudoku_eval.gif", help="Where to write the gif when recording")
     parser.add_argument("--record_fps", type=int, default=10, help="FPS for the recorded gif")
+    parser.add_argument("--tb_logdir", type=str, default="runs/sudoku", help="TensorBoard log directory (set empty to disable)")
     args = parser.parse_args()
+
+    # Mute noisy warnings (pynvml deprecation, cuda-not-available on CPU/MPS, torch elastic redirects)
+    warnings.filterwarnings("ignore", message=".*pynvml package is deprecated.*", category=FutureWarning)
+    warnings.filterwarnings("ignore", message="User provided device_type of 'cuda', but CUDA is not available.*", category=UserWarning)
+    warnings.filterwarnings("ignore", message="Redirects are currently not supported in Windows or MacOs.*", category=UserWarning)
 
     # 1) Load a base config from some existing env (e.g. breakout) and tweak
     original_argv = sys.argv
@@ -57,19 +112,17 @@ def main():
     # Optional recording: PuffeRL uses base-level flags for frame saving
     cfg["base"]["save_frames"] = args.record_frames
 
-    max_env_steps = args.bptt_horizon
-
     backend_map = {
         "serial": pufferlib.vector.Serial,
         "mp": pufferlib.vector.Multiprocessing,
     }
     backend_cls = backend_map[args.backend]
 
-    # 2) Make vecenv for the first phase (easy puzzles)
+    # 2) Make vecenv for the first phase (super-easy puzzles)
     vecenv = make_sudoku_vecenv(
         "super-easy",
         num_envs=args.num_envs,
-        max_steps=max_env_steps,
+        max_steps=DIFFICULTY_MAX_STEPS["super-easy"],
         backend=backend_cls,
         num_workers=args.num_workers,
     )
@@ -80,33 +133,71 @@ def main():
     policy = SudokuMLP(vecenv.driver_env)
     policy = policy.to(cfg["train"]["device"])
 
-    # 4) Create PuffeRL trainer
-    algo = pufferl.PuffeRL(cfg["train"], vecenv, policy)
+    # 4) Create PuffeRL trainer (inject TensorBoard logger if requested)
+    tb_logger = TensorboardLogger(args.tb_logdir) if args.tb_logdir else None
+    algo = pufferl.PuffeRL(cfg["train"], vecenv, policy, logger=tb_logger)
 
-    # === Easy phase ===
+    # === Curriculum phases ===
     print(f"{algo.global_step=}")
     print(f"{args.easy_steps=}")
     log_step = args.log_every
-    solved_window = []
-    while algo.global_step < args.super_easy_steps:
-        algo.evaluate()     # collect rollouts
-        algo.train()        # do updates
 
-        if algo.global_step % log_step == 0:
-            solved_mean = algo.stats.get("solved_episode", 0)
-            solved_window.append(solved_mean)
-            if len(solved_window) > args.early_stop_window:
-                solved_window.pop(0)
-            if (
-                len(solved_window) == args.early_stop_window
-                and all(v >= args.early_stop_threshold for v in solved_window)
-            ):
-                print(
-                    f"Early stop: solved_episode window >= {args.early_stop_threshold} "
-                    f"for {args.early_stop_window} logs"
-                )
-                break
-            algo.print_dashboard()
+    def run_phase(difficulty: str, phase_steps: int, max_steps: int):
+        nonlocal vecenv
+        _ = max_steps  # kept for clarity; env already set with this budget
+        phase_end = algo.global_step + phase_steps
+        next_log = algo.global_step + log_step
+        solved_window = []
+
+        while algo.global_step < phase_end:
+            # Collect rollouts
+            algo.evaluate()
+
+            # Capture solve ratio before train clears stats
+            solved_mean = 0.0
+            if "solved_episode" in algo.stats and len(algo.stats["solved_episode"]):
+                solved_mean = float(np.mean(algo.stats["solved_episode"]))
+
+            # PPO updates
+            logs = algo.train()
+
+            # Prefer aggregated metrics
+            if logs and "environment/solved_episode" in logs:
+                solved_mean = float(logs["environment/solved_episode"])
+            elif algo.last_stats and "solved_episode" in algo.last_stats:
+                solved_mean = float(algo.last_stats["solved_episode"])
+
+            while algo.global_step >= next_log:
+                solved_window.append(solved_mean)
+                if len(solved_window) > args.early_stop_window:
+                    solved_window.pop(0)
+                if (
+                    len(solved_window) == args.early_stop_window
+                    and all(v >= args.early_stop_threshold for v in solved_window)
+                ):
+                    print(
+                        f"[{difficulty}] Early stop: solved_episode window >= {args.early_stop_threshold} "
+                        f"for {args.early_stop_window} logs"
+                    )
+                    return
+                algo.print_dashboard()
+                next_log += log_step
+
+    # Super-easy phase
+    run_phase("super-easy", args.super_easy_steps, DIFFICULTY_MAX_STEPS["super-easy"])
+
+    # Easy phase: switch env with larger step budget
+    vecenv.close()
+    vecenv = make_sudoku_vecenv(
+        "easy",
+        num_envs=args.num_envs,
+        max_steps=DIFFICULTY_MAX_STEPS["easy"],
+        backend=backend_cls,
+        num_workers=args.num_workers,
+    )
+    vecenv.async_reset(seed=0)
+    algo.vecenv = vecenv
+    run_phase("easy", args.easy_steps, DIFFICULTY_MAX_STEPS["easy"])
 
     # Optional eval recording once we've finished/early-stopped super-easy
     if args.record_frames:
@@ -114,58 +205,16 @@ def main():
             policy=policy,
             device=cfg["train"]["device"],
             difficulty="super-easy",
-            max_steps=max_env_steps,
+            max_steps=DIFFICULTY_MAX_STEPS["super-easy"],
             frame_count=args.record_frames_count,
             gif_path=args.record_gif_path,
             fps=args.record_fps,
         )
 
-    print(f"over")
-    
-    # === Easy phase ===
+    print("Training finished (super-easy + easy phases)")
+    if tb_logger:
+        tb_logger.close()
     vecenv.close()
-    #vecenv = make_sudoku_vecenv(
-    #    "easy",
-    #    num_envs=args.num_envs,
-    #    max_steps=max_env_steps,
-    #)
-    #algo.vecenv = vecenv  # depending on their API you may have to rebuild algo
-
-    #while algo.global_step < args.easy_steps:
-    #    algo.evaluate()     # collect rollouts
-    #    algo.train()        # do updates
-    #    algo.print_dashboard()
-
-    ## === Medium phase ===
-    #vecenv.close()
-    #vecenv = make_sudoku_vecenv(
-    #    "medium",
-    #    num_envs=args.num_envs,
-    #    max_steps=max_env_steps,
-    #)
-    #algo.vecenv = vecenv  # depending on their API you may have to rebuild algo
-
-    #while algo.global_step < args.medium_steps:
-    #    algo.evaluate()
-    #    algo.train()
-    #    algo.print_dashboard()
-
-    ## === Hard phase ===
-    #vecenv.close()
-    #vecenv = make_sudoku_vecenv(
-    #    "hard",
-    #    num_envs=args.num_envs,
-    #    max_steps=max_env_steps,
-    #)
-    #algo.vecenv = vecenv
-
-    #while algo.global_step < args.total_steps:
-    #    algo.evaluate()
-    #    algo.train()
-    #    algo.print_dashboard()
-
-    #algo.save_checkpoint()
-    #vecenv.close()
 
 if __name__ == "__main__":
     main()
