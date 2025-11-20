@@ -58,8 +58,10 @@ class SudokuEnv:
             if initial_board.shape != (self.n_rows, self.n_cols):
                 raise ValueError(f"initial_board must be 9x9, got {initial_board.shape}")
             self.initial_board = initial_board.copy()
-        # seed kept for later compatibility, not used yet
-        self.board = self.initial_board.copy()  
+            self.board = self.initial_board.copy()
+        else:
+            # seed kept for later compatibility, not used yet
+            self.board = self.initial_board.copy()
         self.steps = 0
         return self.board.copy()
 
@@ -68,6 +70,20 @@ class SudokuEnv:
         action: int in [0, 729) encoding (row, col, digit).
         Returns: (obs, reward, done, info)
         """
+        # If the board is already solved (can happen after a previous valid
+        # move), short-circuit and signal termination so callers don't keep
+        # sampling overwriting moves and accumulating illegal penalties.
+        if self._is_solved():
+            obs = self.board.copy()
+            info = {
+                "illegal": False,
+                "solved": True,
+                "done": True,
+                "timeout": False,
+                "steps": self.steps,
+            }
+            return obs, 0.0, True, info
+
         self.steps += 1
 
         # Decode (row, col, digit)
@@ -76,6 +92,7 @@ class SudokuEnv:
         reward = -0.01  # small step penalty
         illegal = False
         solved_now = False
+        done = False
 
         # Illegal move: wrong position, overwriting, or breaking constraints.
         if not self._is_valid_move(row, col, digit):
@@ -101,6 +118,7 @@ class SudokuEnv:
         info = {
             "illegal": illegal,
             "solved": solved_now,
+            "done": done,
             "timeout": timeout,
             "steps": self.steps,
         }

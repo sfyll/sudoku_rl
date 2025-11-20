@@ -44,6 +44,7 @@ class SudokuPufferEnv(pufferlib.PufferEnv):
         self.max_steps = max_steps
         self.env = SudokuEnv(initial_board=initial_board, max_steps=max_steps)
         self.difficulty = difficulty
+        self._done = False
 
         # ---- Let Puffer allocate buffers ----
         super().__init__(buf)
@@ -57,6 +58,7 @@ class SudokuPufferEnv(pufferlib.PufferEnv):
         initial_board = sample_puzzle(difficulty=self.difficulty)
 
         board = self.env.reset(seed=seed, initial_board=initial_board)
+        self._done = False
 
         # observations shape: (num_agents, 81) => (1, 81)
         self.observations[0, :] = board.reshape(-1)
@@ -80,10 +82,30 @@ class SudokuPufferEnv(pufferlib.PufferEnv):
         # Delegate all Sudoku logic to our Phase 2 env
         board, reward, done, info = self.env.step(atn)
 
+        # If the episode ended, signal termination on this step and queue up
+        # the next episode so the runner never stalls on a solved puzzle.
+        if done:
+            self._done = True
+            self.terminals[0] = True
+            self.truncations[0] = False
+            self.masks[0] = False
+            self.rewards[0] = float(reward)
+            # Add episode-level stats to info; PufferLib will average these
+            # across steps since the last log.
+            info = info.copy()
+            info["steps_in_episode"] = self.env.steps
+            info["solved_episode"] = 1.0 if info.get("solved") else 0.0
+            infos = [info]
+
+            # Leave observations as-is; Serial backend will call reset
+            # before the next step when it sees env.done
+            return self.observations, self.rewards, self.terminals, self.truncations, infos
+
         # Write back into Puffer buffers (in-place)
         self.observations[0, :] = board.reshape(-1)
         self.rewards[0] = float(reward)
         self.terminals[0] = bool(done)
+        self._done = bool(done)
 
         # We use "done" as terminal, not truncation, for now. Difference is one is task-based (fatal error, i.e. fell of map, agent died or puzzle solved), the other is for technical reason (max step allowed).
         self.truncations[0] = False
@@ -92,31 +114,79 @@ class SudokuPufferEnv(pufferlib.PufferEnv):
         infos = [info]
         return self.observations, self.rewards, self.terminals, self.truncations, infos
 
-    def render(self):
-        """Simple ASCII Sudoku renderer for render_mode='ansi'."""
-        board = self.env.board  # (9, 9) from SudokuEnv
-        if self.render_mode != "ansi":
-            # You could plug in a fancier renderer later
-            return board.copy()
+    def render(self, mode=None):
+        """
+        Render the board.
+        - "ansi" -> ASCII grid
+        - "rgb_array" -> uint8 HxWx3 image for video logging
+        - default -> numpy board copy
+        """
+        mode = mode or self.render_mode
+        board = self.env.board  # (9, 9)
 
-        lines = []
-        for r in range(9):
-            if r % 3 == 0:
-                lines.append("+-------+-------+-------+\n")
-            row_chars = []
-            for c in range(9):
-                if c % 3 == 0:
-                    row_chars.append("| ")
-                val = board[r, c]
-                row_chars.append("." if val == 0 else str(val))
-                row_chars.append(" ")
-            row_chars.append("|\n")
-            lines.append("".join(row_chars))
-        lines.append("+-------+-------+-------+\n")
-        return "".join(lines)
+        if mode == "ansi":
+            lines = []
+            for r in range(9):
+                if r % 3 == 0:
+                    lines.append("+-------+-------+-------+\n")
+                row_chars = []
+                for c in range(9):
+                    if c % 3 == 0:
+                        row_chars.append("| ")
+                    val = board[r, c]
+                    row_chars.append("." if val == 0 else str(val))
+                    row_chars.append(" ")
+                row_chars.append("|\n")
+                lines.append("".join(row_chars))
+            lines.append("+-------+-------+-------+\n")
+            return "".join(lines)
+
+        if mode == "rgb_array":
+            cell = 32
+            line = 2
+            size = cell * 9 + line * 8
+            img = np.full((size, size, 3), 255, dtype=np.uint8)
+
+            # Grid lines
+            for i in range(8):
+                x = (i + 1) * cell + i * line
+                img[:, x:x+line] = 0
+                img[x:x+line, :] = 0
+
+            # 3x3 block lines thicker
+            thick = 4
+            for i in [3, 6]:
+                x = i * cell + (i - 1) * line
+                img[:, x:x+thick] = 0
+                img[x:x+thick, :] = 0
+
+            # Color map for digits; empty = light gray
+            palette = np.array([
+                [230, 230, 230],
+                [31, 119, 180], [255, 127, 14], [44, 160, 44], [214, 39, 40],
+                [148, 103, 189], [140, 86, 75], [227, 119, 194], [127, 127, 127], [188, 189, 34]
+            ], dtype=np.uint8)
+
+            for r in range(9):
+                for c in range(9):
+                    val = board[r, c]
+                    color = palette[val]
+                    y0 = r * cell + r * line
+                    x0 = c * cell + c * line
+                    img[y0:y0+cell, x0:x0+cell] = color
+
+            return img
+
+        # Fallback: numeric board copy
+        return board.copy()
 
     def close(self):
         pass
+
+    # Expose done flag so pufferlib Serial can trigger a reset
+    @property
+    def done(self):
+        return self._done
 
 
 if __name__ == "__main__":
@@ -178,4 +248,3 @@ if __name__ == "__main__":
     print("Done reasons:", reasons)
     print("Last board:")
     print(env.render())
-

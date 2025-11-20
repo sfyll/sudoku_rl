@@ -63,12 +63,9 @@ class SudokuMLP(nn.Module):
         masks = []
         for obs in obs_np:
             board = obs.reshape(9, 9).astype(np.int8)
-            print(f"board{board}")
             mask_np = legal_action_mask(board)
-            print(f"mask{mask_np}")
             if not mask_np.any():
                 mask_np[:] = True
-            print(f"mask_2{mask_np}")
             masks.append(mask_np)
 
         mask = torch.as_tensor(np.stack(masks), device=device, dtype=torch.bool)
