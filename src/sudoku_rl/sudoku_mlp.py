@@ -16,11 +16,13 @@ class SudokuMLP(nn.Module):
         - scalar value estimate V(s)
     """
 
-    def __init__(self, env):
+    def __init__(self, env, use_action_mask: bool = True):
         super().__init__()
 
         obs_dim = env.single_observation_space.shape[0]   # 81
         act_dim = env.single_action_space.n               # 729
+        # Mask prunes illegal moves; toggling it helps sanity-check learning the rules.
+        self.use_action_mask = use_action_mask
 
         # Shared trunk: feature extractor
         self.net = nn.Sequential(
@@ -50,8 +52,9 @@ class SudokuMLP(nn.Module):
         logits = self.action_head(hidden)
         values = self.value_head(hidden)
 
-        mask = self._build_action_mask(observations, logits.device)
-        logits = logits.masked_fill(~mask, float("-inf"))
+        if self.use_action_mask:
+            mask = self._build_action_mask(observations, logits.device)
+            logits = logits.masked_fill(~mask, float("-inf"))
         return logits, values
 
     # Puffer likes .forward to exist; we just alias to forward_eval.
@@ -77,7 +80,7 @@ if __name__ == "__main__":
     import numpy as np
     from .env_puffer import SudokuPufferEnv
 
-    env = SudokuPufferEnv(difficulty="super-easy")
+    env = SudokuPufferEnv(difficulty="super_easy")
     policy = SudokuMLP(env)
 
     obs, infos = env.reset(seed=0)          # obs: [1, 81] np.ndarray

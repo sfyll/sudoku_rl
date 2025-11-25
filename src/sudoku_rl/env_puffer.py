@@ -21,7 +21,7 @@ class SudokuPufferEnv(pufferlib.PufferEnv):
     def __init__(
         self,
         render_mode: str = "ansi",
-        difficulty: str = "super-easy",
+        difficulty: str = "super_easy",
         buf=None,
         seed: int = 0,
         max_steps: int = 10_000,
@@ -95,6 +95,7 @@ class SudokuPufferEnv(pufferlib.PufferEnv):
             info = info.copy()
             info["steps_in_episode"] = self.env.steps
             info["solved_episode"] = 1.0 if info.get("solved") else 0.0
+            info["steps_per_empty"] = self.env.steps / max(1, self.env.initial_empties)
             infos = [info]
 
             # Leave observations as-is; Serial backend will call reset
@@ -195,7 +196,7 @@ if __name__ == "__main__":
     import numpy as np
     from collections import Counter
 
-    difficulty = "super-easy"  
+    difficulty = "super_easy"  
     seed = 0 # easiest puzzle
     env = SudokuPufferEnv(difficulty=difficulty)
     obs, info = env.reset(seed=seed)

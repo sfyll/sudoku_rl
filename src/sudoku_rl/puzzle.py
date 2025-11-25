@@ -15,6 +15,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = PROJECT_ROOT / "data" / "processed"
 SPLIT_FILES = {
     "tiny": DATA_DIR / "sudoku_tiny.csv",
+    "super_easy": DATA_DIR / "sudoku_super_easy.csv",
     "very_easy": DATA_DIR / "sudoku_very_easy.csv",
     "easy": DATA_DIR / "sudoku_easy.csv",
     "moderate": DATA_DIR / "sudoku_moderate.csv",

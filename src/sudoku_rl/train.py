@@ -39,10 +39,13 @@ import imageio
 
 # Heuristic per-difficulty step caps: ~9 actions per empty cell with a small buffer.
 DIFFICULTY_MAX_STEPS = {
-    "super-easy": 60,   # <=4 holes  -> ~36 steps, give some slack
-    "easy": 300,        # <=25 holes -> ~225 steps
-    "medium": 540,      # <=45 holes -> ~405 steps
-    "hard": 720,        # <=60 holes -> ~540 steps
+    "tiny": 60,          # <=4 holes  -> ~36 steps
+    "very_easy": 100,    # <=8 holes  -> ~86 steps
+    "easy": 200,         # <=16 holes -> ~173 steps
+    "moderate": 300,     # <=25 holes -> ~225 steps
+    "medium": 420,       # <=35 holes -> ~378 steps
+    "tricky": 540,       # <=45 holes -> ~486 steps
+    "hard": 720,         # <=60 holes -> ~540 steps
 }
 
 
@@ -65,18 +68,13 @@ class TensorboardLogger:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--device", default="mps")
-    parser.add_argument("--super_easy_steps", type=int, default=200_000)
-    parser.add_argument("--easy_steps", type=int, default=200_000)
-    parser.add_argument("--medium_steps", type=int, default=400_000)
     parser.add_argument("--total_steps", type=int, default=600_000)
     parser.add_argument("--num_envs", type=int, default=64)
-    parser.add_argument("--bptt_horizon", type=int, default=16)
+    parser.add_argument("--bptt_horizon", type=int, default=32)
     parser.add_argument("--minibatch_size", type=int, default=256)
     parser.add_argument("--backend", type=str, default="mp", choices=["serial", "mp"], help="Vecenv backend")
     parser.add_argument("--num_workers", type=int, default=8, help="Workers for threaded/mp backends")
     parser.add_argument("--log_every", type=int, default=500, help="Print dashboard every N global steps")
-    parser.add_argument("--early_stop_window", type=int, default=5, help="Stop training when solved_episode >= threshold for this many consecutive logs")
-    parser.add_argument("--early_stop_threshold", type=float, default=0.99, help="Solved_episode threshold for early stopping")
     parser.add_argument("--record_frames", action="store_true", help="Enable PuffeRL frame recording/gif output")
     parser.add_argument("--record_frames_count", type=int, default=200, help="How many frames to capture when recording")
     parser.add_argument("--record_gif_path", type=str, default="experiments/sudoku_eval.gif", help="Where to write the gif when recording")
@@ -118,11 +116,11 @@ def main():
     }
     backend_cls = backend_map[args.backend]
 
-    # 2) Make vecenv for the first phase (super-easy puzzles)
+    # 2) Make vecenv for the first phase (tiny puzzles)
     vecenv = make_sudoku_vecenv(
-        "super-easy",
+        "tiny",
         num_envs=args.num_envs,
-        max_steps=DIFFICULTY_MAX_STEPS["super-easy"],
+        max_steps=DIFFICULTY_MAX_STEPS["tiny"],
         backend=backend_cls,
         num_workers=args.num_workers,
     )
@@ -137,81 +135,82 @@ def main():
     tb_logger = TensorboardLogger(args.tb_logdir) if args.tb_logdir else None
     algo = pufferl.PuffeRL(cfg["train"], vecenv, policy, logger=tb_logger)
 
-    # === Curriculum phases ===
-    print(f"{algo.global_step=}")
-    print(f"{args.easy_steps=}")
-    log_step = args.log_every
+    def swap_vecenv(new_vecenv, seed: int = 0):
+        """Replace the vecenv while keeping policy/optimizer state."""
+        new_vecenv.async_reset(seed=seed)
+        algo.vecenv = new_vecenv
+        # Reset rollout bookkeeping so buffers align to the new env state.
+        algo.stats.clear()
+        algo.last_stats.clear()
+        algo.ep_lengths.zero_()
+        algo.ep_indices = torch.arange(algo.total_agents, device=cfg["train"]["device"], dtype=torch.int32)
+        algo.free_idx = algo.total_agents
 
-    def run_phase(difficulty: str, phase_steps: int, max_steps: int):
+    # === Curriculum phases ===
+    log_step = args.log_every
+    def run_phase(difficulty: str, phase_steps: int):
         nonlocal vecenv
-        _ = max_steps  # kept for clarity; env already set with this budget
+        algo.stats.clear()
+        algo.last_stats.clear()
         phase_end = algo.global_step + phase_steps
         next_log = algo.global_step + log_step
-        solved_window = []
-
-        while algo.global_step < phase_end:
-            # Collect rollouts
+        while algo.global_step < phase_end and algo.global_step < args.total_steps:
             algo.evaluate()
-
-            # Capture solve ratio before train clears stats
-            solved_mean = 0.0
-            if "solved_episode" in algo.stats and len(algo.stats["solved_episode"]):
-                solved_mean = float(np.mean(algo.stats["solved_episode"]))
-
-            # PPO updates
-            logs = algo.train()
-
-            # Prefer aggregated metrics
-            if logs and "environment/solved_episode" in logs:
-                solved_mean = float(logs["environment/solved_episode"])
-            elif algo.last_stats and "solved_episode" in algo.last_stats:
-                solved_mean = float(algo.last_stats["solved_episode"])
+            algo.train()
 
             while algo.global_step >= next_log:
-                solved_window.append(solved_mean)
-                if len(solved_window) > args.early_stop_window:
-                    solved_window.pop(0)
-                if (
-                    len(solved_window) == args.early_stop_window
-                    and all(v >= args.early_stop_threshold for v in solved_window)
-                ):
-                    print(
-                        f"[{difficulty}] Early stop: solved_episode window >= {args.early_stop_threshold} "
-                        f"for {args.early_stop_window} logs"
-                    )
-                    return
                 algo.print_dashboard()
                 next_log += log_step
+        return
 
-    # Super-easy phase
-    run_phase("super-easy", args.super_easy_steps, DIFFICULTY_MAX_STEPS["super-easy"])
+    # Configure per-phase step budgets (user can adjust total_steps; these defaults split it roughly evenly)
+    phase_budgets = {
+        "tiny": 60_000,
+        "very_easy": 100_000,
+        "easy": 100_000,
+    }
 
-    # Easy phase: switch env with larger step budget
+    # Phase 1: tiny (<=4 blanks)
+    run_phase("tiny", phase_budgets["tiny"])
+
+    # Phase 2: very_easy (5-8 blanks)
     vecenv.close()
     vecenv = make_sudoku_vecenv(
-        "easy",
+        "very_easy",
         num_envs=args.num_envs,
-        max_steps=DIFFICULTY_MAX_STEPS["easy"],
+        max_steps=DIFFICULTY_MAX_STEPS["very_easy"],
         backend=backend_cls,
         num_workers=args.num_workers,
     )
-    vecenv.async_reset(seed=0)
-    algo.vecenv = vecenv
-    run_phase("easy", args.easy_steps, DIFFICULTY_MAX_STEPS["easy"])
+    swap_vecenv(vecenv, seed=0)
+    run_phase("very_easy", phase_budgets["very_easy"])
 
-    # Optional eval recording once we've finished/early-stopped super-easy
-    if args.record_frames:
-        record_policy_run(
-            policy=policy,
-            device=cfg["train"]["device"],
-            difficulty="super-easy",
-            max_steps=DIFFICULTY_MAX_STEPS["super-easy"],
-            frame_count=args.record_frames_count,
-            gif_path=args.record_gif_path,
-            fps=args.record_fps,
-        )
+    ## Phase 3: easy (9-16 blanks)
+    vecenv.close()
+    #vecenv = make_sudoku_vecenv(
+    #    "easy",
+    #    num_envs=args.num_envs,
+    #    max_steps=DIFFICULTY_MAX_STEPS["easy"],
+    #    backend=backend_cls,
+    #    num_workers=args.num_workers,
+    #)
+    #vecenv.async_reset(seed=0)
+    #algo.vecenv = vecenv
+    #run_phase("easy", phase_budgets["easy"])
 
-    print("Training finished (super-easy + easy phases)")
+    ## Optional eval recording once we've finished/early-stopped super-easy
+    #if args.record_frames:
+    #    record_policy_run(
+    #        policy=policy,
+    #        device=cfg["train"]["device"],
+    #        difficulty="tiny",
+    #        max_steps=DIFFICULTY_MAX_STEPS["tiny"],
+    #        frame_count=args.record_frames_count,
+    #        gif_path=args.record_gif_path,
+    #        fps=args.record_fps,
+    #    )
+
+    print("Training finished (tiny + very_easy + easy phases)")
     if tb_logger:
         tb_logger.close()
     vecenv.close()
