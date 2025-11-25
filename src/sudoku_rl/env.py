@@ -103,7 +103,6 @@ class SudokuEnv:
         self.steps += 1
         row, col, digit = self.decode_action(action)
 
-
         reward = STEP_PENALTY
         illegal = False
         solved_now = False
@@ -150,13 +149,13 @@ class SudokuEnv:
         if timeout:
             reward += TIMEOUT_PENALTY
 
-        done = solved_now or timeout
+        done = solved_now or timeout or (illegal_code == 7)
         obs = self.board.copy()
         info = {
             "illegal": illegal,
+            "illegal_code": illegal_code,
             "illegal_conflict": 1.0 if illegal_code in (4, 5, 6) else 0.0,
             "illegal_overwrite": 1.0 if illegal_code == 3 else 0.0,
-            "illegal_code": illegal_code,
             "solved": solved_now,
             "timeout": timeout,
             "no_legal_moves": False,

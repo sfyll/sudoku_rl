@@ -34,19 +34,22 @@ from pufferlib import pufferl  # their trainer module
 from .make_vecenv import make_sudoku_vecenv
 from .sudoku_mlp import SudokuMLP
 from .env_puffer import SudokuPufferEnv
+from .puzzle import supported_bins
 
 import imageio
 
-# Heuristic per-difficulty step caps: ~9 actions per empty cell with a small buffer.
-DIFFICULTY_MAX_STEPS = {
-    "tiny": 60,          # <=4 holes  -> ~36 steps
-    "very_easy": 100,    # <=8 holes  -> ~86 steps
-    "easy": 200,         # <=16 holes -> ~173 steps
-    "moderate": 300,     # <=25 holes -> ~225 steps
-    "medium": 420,       # <=35 holes -> ~378 steps
-    "tricky": 540,       # <=45 holes -> ~486 steps
-    "hard": 720,         # <=60 holes -> ~540 steps
-}
+def _parse_bin(label: str) -> tuple[int, int]:
+    parts = label.split("_")
+    if len(parts) != 3:
+        raise ValueError(f"Unexpected bin label format: {label}")
+    return int(parts[1]), int(parts[2])
+
+
+def max_steps_for_bin(label: str, fudge: float = 1.2) -> int:
+    lo, hi = _parse_bin(label)
+    empties = hi
+    # Rough heuristic: ~9 actions per empty cell with a small buffer
+    return int(np.ceil(empties * 9 * fudge))
 
 
 class TensorboardLogger:
@@ -116,11 +119,18 @@ def main():
     }
     backend_cls = backend_map[args.backend]
 
-    # 2) Make vecenv for the first phase (tiny puzzles)
+    # 2) Build bin curriculum from easiest upward (4-hole increments)
+    bins = list(supported_bins())
+    print(f"Using bins: {bins}")
+    if not bins:
+        raise RuntimeError("No sudoku bins available. Generate data with scripts/create_filtered_dataset_sudoku.py")
+
+    # First phase uses the easiest bin
+    first_bin = bins[0]
     vecenv = make_sudoku_vecenv(
-        "tiny",
+        first_bin,
         num_envs=args.num_envs,
-        max_steps=DIFFICULTY_MAX_STEPS["tiny"],
+        max_steps=max_steps_for_bin(first_bin),
         backend=backend_cls,
         num_workers=args.num_workers,
     )
@@ -164,7 +174,7 @@ def main():
     ENT_WARMUP_STEPS = 5_000
     ENT_WARMUP_MULT = 3.0
 
-    def run_phase(difficulty: str, phase_steps: int):
+    def run_phase(bin_label: str, phase_steps: int):
         nonlocal vecenv
         algo.stats.clear()
         algo.last_stats.clear()
@@ -186,53 +196,40 @@ def main():
         return
 
     # Configure per-phase step budgets (user can adjust total_steps; these defaults split it roughly evenly)
-    phase_budgets = {
-        "tiny": 60_000,
-        "very_easy": 100_000,
-        "easy": 100_000,
-    }
+    # Default budgets: share total_steps across first 3 bins to keep runtime similar to prior setup
+    phase_bins = bins[:3]
+    default_phase_budget = args.total_steps // max(1, len(phase_bins))
+    phase_budgets = {b: default_phase_budget for b in phase_bins}
 
-    # Phase 1: tiny (<=4 blanks)
-    run_phase("tiny", phase_budgets["tiny"])
+    # Phase loop (up to first 3 bins by default)
+    current_bin = first_bin
+    run_phase(current_bin, phase_budgets[current_bin])
 
-    # Phase 2: very_easy (5-8 blanks)
-    vecenv.close()
-    vecenv = make_sudoku_vecenv(
-        "very_easy",
-        num_envs=args.num_envs,
-        max_steps=DIFFICULTY_MAX_STEPS["very_easy"],
-        backend=backend_cls,
-        num_workers=args.num_workers,
-    )
-    swap_vecenv(vecenv, seed=0)
-    run_phase("very_easy", phase_budgets["very_easy"])
-
-    ## Phase 3: easy (9-16 blanks)
-    vecenv.close()
-    #vecenv = make_sudoku_vecenv(
-    #    "easy",
-    #    num_envs=args.num_envs,
-    #    max_steps=DIFFICULTY_MAX_STEPS["easy"],
-    #    backend=backend_cls,
-    #    num_workers=args.num_workers,
-    #)
-    #vecenv.async_reset(seed=0)
-    #algo.vecenv = vecenv
-    #run_phase("easy", phase_budgets["easy"])
+    for next_bin in phase_bins[1:3]:
+        vecenv.close()
+        vecenv = make_sudoku_vecenv(
+            next_bin,
+            num_envs=args.num_envs,
+            max_steps=max_steps_for_bin(next_bin),
+            backend=backend_cls,
+            num_workers=args.num_workers,
+        )
+        swap_vecenv(vecenv, seed=0)
+        run_phase(next_bin, phase_budgets[next_bin])
 
     ## Optional eval recording once we've finished/early-stopped super-easy
     #if args.record_frames:
     #    record_policy_run(
     #        policy=policy,
     #        device=cfg["train"]["device"],
-    #        difficulty="tiny",
+    # legacy reference kept for context only
     #        max_steps=DIFFICULTY_MAX_STEPS["tiny"],
     #        frame_count=args.record_frames_count,
     #        gif_path=args.record_gif_path,
     #        fps=args.record_fps,
     #    )
 
-    print("Training finished (tiny + very_easy + easy phases)")
+    print(f"Training finished ({', '.join(phase_bins)} phases)")
     if tb_logger:
         tb_logger.close()
     vecenv.close()
@@ -244,14 +241,14 @@ if __name__ == "__main__":
 def record_policy_run(
     policy,
     device: str,
-    difficulty: str,
+    bin_label: str,
     max_steps: int,
     frame_count: int,
     gif_path: str,
     fps: int,
 ):
     """Run a single-agent eval rollout and save a GIF using env.render("rgb_array")."""
-    env = SudokuPufferEnv(difficulty=difficulty, max_steps=max_steps)
+    env = SudokuPufferEnv(bin_label=bin_label, max_steps=max_steps)
     policy.eval()
 
     frames = []

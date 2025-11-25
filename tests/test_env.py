@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 
 from sudoku_rl import SudokuEnv
-from sudoku_rl.puzzle import sample_puzzle
+from sudoku_rl.puzzle import sample_puzzle, supported_bins
 from sudoku_rl.env import legal_action_mask, count_violations
 
 
@@ -44,8 +44,6 @@ def test_illegal_move_penalized_and_not_applied():
     # Try to place a 5 in same row, which is illegal.
     action = env.encode_action(row=0, col=2, digit=5)
     obs, reward, done, info = env.step(action)
-
-    print(f"reward: {reward}")
 
     # Board must be unchanged at that location.
     assert obs[0, 2] == 0
@@ -105,43 +103,43 @@ def test_solved_detection():
     assert reward > 0.9  # base -0.01 + shaping + solve bonus
 
 
-def test_terminates_on_no_legal_moves():
+def test_wrong_digit_ends_episode():
     """
-    Construct an unsolved board with zero legal actions:
-    - Top-right block is full except (0, 8)
-    - Column 8 already contains the only missing digit (2), so nothing fits.
+    Picking a locally legal but wrong digit should end the episode immediately.
     """
-    board = np.array(
-        [
-            [5, 3, 4, 6, 7, 8, 9, 1, 0],  # (0, 8) is empty
-            [6, 7, 2, 1, 9, 5, 3, 4, 2],  # duplicate 2 in row/col to block the gap
-            [1, 9, 8, 3, 4, 2, 5, 6, 7],
-            [8, 5, 9, 7, 6, 1, 4, 2, 3],
-            [4, 2, 6, 8, 5, 3, 7, 9, 1],
-            [7, 1, 3, 9, 2, 4, 8, 5, 6],
-            [9, 6, 1, 5, 3, 7, 2, 8, 4],
-            [2, 8, 7, 4, 1, 9, 6, 3, 5],
-            [3, 4, 5, 2, 8, 6, 1, 7, 9],
-        ],
-        dtype=np.int8,
-    )
-
-    env = SudokuEnv(initial_board=board, max_steps=5)
+    board, solution = sample_puzzle(bin_label=supported_bins()[0], seed=0, return_solution=True)
+    env = SudokuEnv(initial_board=board, solution_board=solution)
     env.reset()
 
-    # Action is irrelevant; env should terminate before applying it.
-    obs, reward, done, info = env.step(env.encode_action(row=0, col=0, digit=1))
+    legal_mask = legal_action_mask(board).reshape(9, 9, 9)
+    target = None
+    for r in range(9):
+        for c in range(9):
+            if board[r, c] != 0:
+                continue
+            digits = np.flatnonzero(legal_mask[r, c])
+            if len(digits) > 1:
+                correct = int(solution[r, c])
+                wrong_candidates = [d + 1 for d in digits if (d + 1) != correct]
+                if wrong_candidates:
+                    target = (r, c, wrong_candidates[0], correct)
+                    break
+        if target:
+            break
+    assert target, "need a cell with multiple legal digits to test wrong-solution termination"
+    row, col, wrong_digit, correct_digit = target
 
+    action = env.encode_action(row=row, col=col, digit=wrong_digit)
+    _, reward, done, info = env.step(action)
+
+    assert info["illegal"] is True
+    assert info["illegal_code"] == 7
     assert done is True
-    assert info["no_legal_moves"] is True
-    assert info["solved"] is False
-    assert info["timeout"] is False
-    assert reward < -0.5  # got penalized for being in a dead-end state
-    assert np.array_equal(obs, board)  # board unchanged
+    assert reward < 0
 
 
 def test_wrong_digit_against_solution_is_penalized():
-    board, solution = sample_puzzle("tiny", seed=0, return_solution=True)
+    board, solution = sample_puzzle(bin_label=supported_bins()[0], seed=0, return_solution=True)
     env = SudokuEnv(initial_board=board, solution_board=solution)
     env.reset()
 
@@ -169,12 +167,13 @@ def test_wrong_digit_against_solution_is_penalized():
 
     assert info["illegal"] is True
     assert info["illegal_code"] == 7
-    assert done is False  # we just penalize and continue
+    assert done is True  # wrong solution is terminal
     assert reward < 0  # mistake penalty applied
 
 
 def test_env_handles_dataset_puzzle():
-    board = sample_puzzle("super-easy", seed=0)
+    # pick a mid bin so puzzles have enough blanks
+    board = sample_puzzle(bin_label=supported_bins()[1], seed=0)
     env = SudokuEnv(initial_board=board)
 
     obs = env.reset()

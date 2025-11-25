@@ -80,7 +80,7 @@ if __name__ == "__main__":
     import numpy as np
     from .env_puffer import SudokuPufferEnv
 
-    env = SudokuPufferEnv(difficulty="super_easy")
+    env = SudokuPufferEnv(bin_label="zeros_04_07")
     policy = SudokuMLP(env)
 
     obs, infos = env.reset(seed=0)          # obs: [1, 81] np.ndarray

@@ -4,7 +4,7 @@ from .env_puffer import SudokuPufferEnv
 
 
 def make_sudoku_vecenv(
-    difficulty: str,
+    bin_label: str,
     num_envs: int,
     seed: int = 0,
     max_steps: int | None = None,
@@ -13,7 +13,7 @@ def make_sudoku_vecenv(
 ):
     """Create a Puffer vecenv with optional threaded/multiprocess backend."""
 
-    env_kwargs = {"difficulty": difficulty}
+    env_kwargs = {"bin_label": bin_label}
     if max_steps is not None:
         env_kwargs["max_steps"] = max_steps
 

@@ -1,6 +1,8 @@
-import pandas as pd
+import json
 from pathlib import Path
+
 import numpy as np
+import pandas as pd
 
 
 INPUT_PATH = Path("data/sudoku.csv")
@@ -37,56 +39,67 @@ df["clues"] = 81 - df["zeros"]
 
 print(f"Zero Counted")
 
-EMPTY_BINS = [
-    ("tiny", 0, 4),
-    ("very_easy", 5, 8),
-    ("easy", 9, 16),
-    ("moderate", 17, 25),
-    ("medium", 26, 35),
-    ("tricky", 36, 45),
-    ("hard", 46, 60),
-]
+# ---- 3. Auto-create 4-hole bins ----
 
-def assign_difficulty(n_zeros: int) -> str:
-    for name, lo, hi in EMPTY_BINS:
-        if lo <= n_zeros <= hi:
-            return name
-    return "other"
+BIN_SIZE = 4
+zeros_min = int(df["zeros"].min())
+zeros_max = int(df["zeros"].max())
 
-df["difficulty"] = df["zeros"].apply(assign_difficulty)
+def make_bin_edges(lo: int, hi: int, step: int):
+    edges = []
+    start = 0  # always start at 0 blanks for consistent bin labels
+    for b in range(start, hi + step, step):
+        edges.append((b, b + step - 1))
+    return edges
 
-# ---- 4. Optionally subsample per difficulty ----
+BIN_RANGES = make_bin_edges(zeros_min, zeros_max, BIN_SIZE)
 
-MAX_PER = {
-    "tiny": 10_000,
-    "very_easy": 20_000,
-    "easy": 100_000,
-    "moderate": 100_000,
-    "medium": 100_000,
-    "tricky": 100_000,
-    "hard": 100_000,
-}
+def bin_label(lo: int, hi: int) -> str:
+    return f"zeros_{lo:02d}_{hi:02d}"
 
-dfs = []
+df["bin_label"] = pd.cut(
+    df["zeros"],
+    bins=[r[0] - 0.5 for r in BIN_RANGES] + [BIN_RANGES[-1][1] + 0.5],
+    labels=[bin_label(lo, hi) for lo, hi in BIN_RANGES],
+    include_lowest=True,
+)
+
+# ---- 4. Subsample per bin (uniform cap) ----
+
+MAX_PER_BIN = 100_000
 rng = np.random.default_rng(42)
+dfs = []
+manifest = []
 
-print(f"Iterating thourgh the sudoku")
+print("Iterating through bins")
 
-for diff, max_n in MAX_PER.items():
-    sub = df[df["difficulty"] == diff]
-    if diff == "other":
-        continue
-    if len(sub) == 0:
-        continue
-    if len(sub) == 0:
-        continue
-    if len(sub) > max_n:
-        # sample without replacement for reproducibility
-        idx = rng.choice(sub.index.to_numpy(), size=max_n, replace=False)
-        sub = sub.loc[idx]
-    out_path = OUTPUT_DIR / f"sudoku_{diff}.csv"
-    sub.to_csv(out_path, index=False)
-    dfs.append(sub)
+for (lo, hi) in BIN_RANGES:
+    label = bin_label(lo, hi)
+    sub = df[df["bin_label"] == label]
+    out_path = OUTPUT_DIR / f"sudoku_{label}.csv"
+
+    if len(sub) > 0:
+        if len(sub) > MAX_PER_BIN:
+            idx = rng.choice(sub.index.to_numpy(), size=MAX_PER_BIN, replace=False)
+            sub = sub.loc[idx]
+        sub_to_write = sub[[puzzle_col, solution_col, "zeros", "clues", "bin_label"]]
+        sub_to_write.to_csv(out_path, index=False)
+        dfs.append(sub_to_write)
+        rows_written = int(len(sub_to_write))
+    else:
+        # Write an empty placeholder with headers so the manifest is complete.
+        sub_to_write = pd.DataFrame(columns=[puzzle_col, solution_col, "zeros", "clues", "bin_label"])
+        sub_to_write.to_csv(out_path, index=False)
+        rows_written = 0
+
+    manifest.append(
+        {
+            "label": label,
+            "path": out_path.name,
+            "rows": rows_written,
+            "zeros_range": [lo, hi],
+        }
+    )
 
 # Combined filtered dataset
 if dfs:
@@ -94,5 +107,10 @@ if dfs:
     combined_path = OUTPUT_DIR / "sudoku_all_filtered.csv"
     combined.to_csv(combined_path, index=False)
     print(f"Wrote combined filtered dataset to {combined_path}")
+
+    manifest_path = OUTPUT_DIR / "sudoku_bins_manifest.json"
+    with manifest_path.open("w") as f:
+        json.dump(manifest, f, indent=2)
+    print(f"Wrote bin manifest to {manifest_path}")
 else:
-    print("No puzzles matched any difficulty thresholds.")
+    print("No puzzles matched any bin thresholds.")

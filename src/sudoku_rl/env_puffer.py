@@ -21,7 +21,7 @@ class SudokuPufferEnv(pufferlib.PufferEnv):
     def __init__(
         self,
         render_mode: str = "ansi",
-        difficulty: str = "super_easy",
+        bin_label: str | None = None,
         buf=None,
         seed: int = 0,
         max_steps: int = 10_000,
@@ -43,7 +43,7 @@ class SudokuPufferEnv(pufferlib.PufferEnv):
         self._seed = seed
         self.max_steps = max_steps
         self.env = SudokuEnv(initial_board=initial_board, max_steps=max_steps)
-        self.difficulty = difficulty
+        self.bin_label = bin_label
         self._done = False
 
         # ---- Let Puffer allocate buffers ----
@@ -55,7 +55,10 @@ class SudokuPufferEnv(pufferlib.PufferEnv):
         if seed is None:
             seed = self._seed
 
-        initial_board = sample_puzzle(difficulty=self.difficulty, return_solution=True)
+        initial_board = sample_puzzle(
+            bin_label=self.bin_label,
+            return_solution=True,
+        )
         if isinstance(initial_board, tuple):
             board, solution = initial_board
         else:
@@ -200,9 +203,8 @@ if __name__ == "__main__":
     import numpy as np
     from collections import Counter
 
-    difficulty = "super_easy"  
-    seed = 0 # easiest puzzle
-    env = SudokuPufferEnv(difficulty=difficulty)
+    seed = 0  # easiest puzzle
+    env = SudokuPufferEnv(bin_label="zeros_04_07")
     obs, info = env.reset(seed=seed)
     steps = 0
 
