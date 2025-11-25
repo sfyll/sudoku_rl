@@ -47,8 +47,8 @@ class SudokuEnv:
         self.terminate_on_wrong_digit: bool = terminate_on_wrong_digit
         # Track wrong-digit attempts to block repeat guesses within an episode
         self.tried_mask = np.zeros(self.n_rows * self.n_cols * self.n_digits, dtype=bool)
-        # Track wrong-digit attempts to block repeat tries within an episode
-        self.tried_mask = np.zeros(self.n_rows * self.n_cols * self.n_digits, dtype=bool)
+        self.wrong_digit_count: int = 0
+        self.repeat_wrong_count: int = 0
 
         # Derived sizes
         self.n_actions: int = self.n_rows * self.n_cols * self.n_digits
@@ -69,6 +69,8 @@ class SudokuEnv:
         self.steps = 0
         self.initial_empties = int(np.sum(self.board == 0))
         self.tried_mask[:] = False
+        self.wrong_digit_count = 0
+        self.repeat_wrong_count = 0
         return self.board.copy()
 
     def step(self, action: int) -> Tuple[Board, float, bool, Dict[str, Any]]:
@@ -79,8 +81,8 @@ class SudokuEnv:
         # --- Reward shaping constants (tune these) ---
         STEP_PENALTY     = -0.01
         ILLEGAL_PENALTY  = -1.0
-        MISTAKE_PENALTY  = -0.025
-        FILL_BONUS       = 0.10   # reward for safe progress: easier bump
+        MISTAKE_PENALTY  = -0.1
+        FILL_BONUS       = 0.20   # reward for safe progress: easier bump
         SOLVE_BONUS      = 3.0
         EMPTY_WEIGHT     = 0.02   # reward per reduction in empty cells
         VIOLATION_WEIGHT = 0.02   # reward per reduction in violations
@@ -112,6 +114,7 @@ class SudokuEnv:
             illegal = True
             illegal_code = 8
             reward += MISTAKE_PENALTY * 5
+            self.repeat_wrong_count += 1
         elif digit != self.solution_board[row, col]:
             illegal = True
             if illegal_code:
@@ -123,6 +126,7 @@ class SudokuEnv:
             else:
                 illegal_code = 7  # custom code for wrong-solution digit
                 reward += MISTAKE_PENALTY * 3
+            self.wrong_digit_count += 1
         else:
             # Apply legal move
             self.board[row, col] = digit
@@ -144,13 +148,13 @@ class SudokuEnv:
                 reward += SOLVE_BONUS
                 solved_now = True
 
-        # Mark wrong attempts so we can block repeats within the episode
-        if illegal_code in (7, 8):
-            self.tried_mask[action] = True
-
         timeout = self.steps >= self.max_steps and not solved_now
         if timeout:
             reward += TIMEOUT_PENALTY
+
+        # Mark wrong attempts so we can block repeats within the episode
+        if illegal_code in (7, 8):
+            self.tried_mask[action] = True
 
         done = solved_now or timeout or (self.terminate_on_wrong_digit and illegal_code in (7, 8))
         obs = self.board.copy()
@@ -164,9 +168,17 @@ class SudokuEnv:
             "no_legal_moves": False,
             "steps": self.steps,
             "steps_per_empty": self.steps / max(1, self.initial_empties),
+            "wrong_digit_count": float(self.wrong_digit_count),
+            "repeat_wrong_count": float(self.repeat_wrong_count),
+            "wrong_digit_per_empty": float(self.wrong_digit_count) / max(1, self.initial_empties),
+            "repeat_wrong_per_empty": float(self.repeat_wrong_count) / max(1, self.initial_empties),
         }
         for code in range(1, 9):
             info[f"illegal_code_{code}"] = 1.0 if illegal_code == code else 0.0
+
+        if done:
+            clean_solve = solved_now and self.wrong_digit_count == 0 and self.repeat_wrong_count == 0
+            info["clean_solve"] = 1.0 if clean_solve else 0.0
         return obs, reward, done, info
 
     # ------------- Action encoding -------------

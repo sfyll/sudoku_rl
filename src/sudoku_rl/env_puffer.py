@@ -27,6 +27,7 @@ class SudokuPufferEnv(pufferlib.PufferEnv):
         max_steps: int = 10_000,
         initial_board=None,
         terminate_on_wrong_digit: bool = True,
+        prev_mix_ratio: float = 0.3,
     ):
         # ---- Required attributes BEFORE super().__init__ ----
         self.single_observation_space = gymnasium.spaces.Box(
@@ -43,11 +44,13 @@ class SudokuPufferEnv(pufferlib.PufferEnv):
         # ---- Our own logical env (Phase 2) ----
         self._seed = seed
         self.max_steps = max_steps
+        self.prev_mix_ratio = prev_mix_ratio
         if initial_board is None:
             board, solution = sample_puzzle(
                 bin_label=bin_label,
                 seed=seed,
                 return_solution=True,
+                prev_mix_ratio=prev_mix_ratio,
             )
         elif isinstance(initial_board, tuple) and len(initial_board) == 2:
             board, solution = initial_board
@@ -75,6 +78,7 @@ class SudokuPufferEnv(pufferlib.PufferEnv):
         board, solution = sample_puzzle(
             bin_label=self.bin_label,
             return_solution=True,
+            prev_mix_ratio=self.prev_mix_ratio,
         )
 
         board = self.env.reset(seed=seed, initial_board=board, solution_board=solution)

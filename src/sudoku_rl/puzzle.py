@@ -168,6 +168,7 @@ def sample_puzzle(
     target_zeros: Optional[int] = None,
     seed: Optional[int] = None,
     return_solution: bool = False,
+    prev_mix_ratio: float = 0.3,
 ):
     """
     Sample a random puzzle of a given bin.
@@ -178,6 +179,7 @@ def sample_puzzle(
         target_zeros: integer target; nearest bin is selected.
         seed: optional deterministic index.
         return_solution: if True, returns (board, solution).
+        prev_mix_ratio: probability of sampling from an earlier (easier) bin to reduce catastrophic forgetting.
     """
     if bin_label is None:
         if target_zeros is not None:
@@ -188,7 +190,39 @@ def sample_puzzle(
     else:
         bin_label = _normalize_label(bin_label)
 
-    pool = get_puzzle_pool(bin_label)
+    # Optionally mix in puzzles from previous bins (uniform over them).
+    def _choose_bin(label: str) -> str:
+        if prev_mix_ratio <= 0:
+            return label
+
+        bins = list(supported_bins())
+        if label not in bins:
+            return label
+
+        idx = bins.index(label)
+        if idx == 0:
+            return label  # no easier bins
+
+        # Filter out bins with no rows (defensive: manifest may list zero-row bins)
+        previous_bins = []
+        for b in bins[:idx]:
+            try:
+                if len(get_puzzle_pool(b)) > 0:
+                    previous_bins.append(b)
+            except (ValueError, FileNotFoundError):
+                # Skip bins that failed to load
+                continue
+        if not previous_bins:
+            return label
+
+        # Draw from previous bins with the configured probability.
+        if random.random() < prev_mix_ratio:
+            return random.choice(previous_bins)
+        return label
+
+    selected_bin = _choose_bin(bin_label)
+
+    pool = get_puzzle_pool(selected_bin)
     idx = seed if seed is not None else random.randrange(len(pool))
     row = pool[idx]
     puzzle_str = row["puzzle"] if isinstance(row, dict) else row

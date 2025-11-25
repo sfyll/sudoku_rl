@@ -71,7 +71,7 @@ class TensorboardLogger:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--device", default="mps")
-    parser.add_argument("--total_steps", type=int, default=600_000)
+    parser.add_argument("--total_steps", type=int, default=400_000)
     parser.add_argument("--num_envs", type=int, default=64)
     parser.add_argument("--bptt_horizon", type=int, default=32)
     parser.add_argument("--minibatch_size", type=int, default=256)
@@ -198,7 +198,7 @@ def main():
 
     # Configure per-phase step budgets (user can adjust total_steps; these defaults split it roughly evenly)
     # Default budgets: share total_steps across first 3 bins to keep runtime similar to prior setup
-    phase_bins = bins[:3]
+    phase_bins = bins[:2]
     default_phase_budget = args.total_steps // max(1, len(phase_bins))
     phase_budgets = {b: default_phase_budget for b in phase_bins}
 
@@ -206,7 +206,7 @@ def main():
     current_bin = first_bin
     run_phase(current_bin, phase_budgets[current_bin])
 
-    for next_bin in phase_bins[1:2]:
+    for next_bin in phase_bins[1:]:
         vecenv.close()
         vecenv = make_sudoku_vecenv(
             next_bin,
