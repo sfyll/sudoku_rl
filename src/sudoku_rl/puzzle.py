@@ -49,7 +49,7 @@ def _normalize_difficulty(label: str) -> str:
 
 
 def _load_from_csv(path: Path, difficulty: str) -> List[str]:
-    puzzles: List[str] = []
+    puzzles: List[dict] = []
     with path.open(newline="") as f:
         reader = csv.DictReader(f)
         if "puzzle" not in reader.fieldnames:
@@ -58,7 +58,12 @@ def _load_from_csv(path: Path, difficulty: str) -> List[str]:
             puzzle = row["puzzle"].strip()
             if len(puzzle) != 81:
                 raise ValueError(f"Puzzle '{puzzle}' in {path} must be length 81")
-            puzzles.append(puzzle)
+            entry = {"puzzle": puzzle}
+            if "solution" in row and row["solution"]:
+                solution = row["solution"].strip()
+                if len(solution) == 81:
+                    entry["solution"] = solution
+            puzzles.append(entry)
     if not puzzles:
         raise ValueError(f"No puzzles loaded for difficulty '{difficulty}' from {path}")
     return puzzles
@@ -80,10 +85,29 @@ def get_puzzle_pool(difficulty: str) -> List[str]:
     return pools[normalized]
 
 
-def sample_puzzle(difficulty: str = "easy", seed: Optional[int] = None) -> np.ndarray:
-    """Sample a random puzzle of given difficulty as a (9, 9) board."""
+def sample_puzzle(difficulty: str = "easy", seed: Optional[int] = None, return_solution: bool = False):
+    """
+    Sample a random puzzle of given difficulty.
+    Returns:
+        - board only (default)
+        - or (board, solution) if return_solution=True
+    """
     pool = get_puzzle_pool(difficulty)
-    if seed is not None:
-        return _string_to_board(pool[seed])
-    s = random.choice(pool)
-    return _string_to_board(s)
+    idx = seed if seed is not None else random.randrange(len(pool))
+    row = pool[idx]
+    if isinstance(row, str):
+        puzzle_str = row
+        solution_str = None
+    else:
+        # CSV loader stores dict rows with puzzle/solution keys
+        puzzle_str = row["puzzle"]
+        solution_str = row.get("solution")
+
+    puzzle_board = _string_to_board(puzzle_str)
+    if not return_solution:
+        return puzzle_board
+
+    if solution_str is None:
+        raise ValueError(f"Solution not available for difficulty {difficulty}")
+    solution_board = _string_to_board(solution_str)
+    return puzzle_board, solution_board

@@ -140,6 +140,39 @@ def test_terminates_on_no_legal_moves():
     assert np.array_equal(obs, board)  # board unchanged
 
 
+def test_wrong_digit_against_solution_is_penalized():
+    board, solution = sample_puzzle("tiny", seed=0, return_solution=True)
+    env = SudokuEnv(initial_board=board, solution_board=solution)
+    env.reset()
+
+    # Find an empty cell with >1 locally legal digit, pick a legal-but-wrong digit.
+    legal_mask = legal_action_mask(board).reshape(9, 9, 9)
+    target = None
+    for r in range(9):
+        for c in range(9):
+            if board[r, c] != 0:
+                continue
+            digits = np.flatnonzero(legal_mask[r, c])
+            if len(digits) > 1:
+                correct_digit = int(solution[r, c])
+                wrong_candidates = [d + 1 for d in digits if (d + 1) != correct_digit]
+                if wrong_candidates:
+                    target = (r, c, wrong_candidates[0], correct_digit)
+                    break
+        if target:
+            break
+    assert target, "need a cell with multiple legal digits to test wrong-solution penalty"
+    row, col, wrong_digit, correct_digit = target
+
+    action = env.encode_action(row=row, col=col, digit=wrong_digit)
+    _, reward, done, info = env.step(action)
+
+    assert info["illegal"] is True
+    assert info["illegal_code"] == 7
+    assert done is False  # we just penalize and continue
+    assert reward < 0  # mistake penalty applied
+
+
 def test_env_handles_dataset_puzzle():
     board = sample_puzzle("super-easy", seed=0)
     env = SudokuEnv(initial_board=board)

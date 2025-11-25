@@ -134,6 +134,19 @@ def main():
     # 4) Create PuffeRL trainer (inject TensorBoard logger if requested)
     tb_logger = TensorboardLogger(args.tb_logdir) if args.tb_logdir else None
     algo = pufferl.PuffeRL(cfg["train"], vecenv, policy, logger=tb_logger)
+    base_ent_coef = cfg["train"]["ent_coef"]
+
+    # Patch SPS reporting to hold the last non-zero value instead of 0 when
+    # logs happen too frequently (avoids misleading dashboard zeros).
+    def _patched_sps(self):
+        raw = 0
+        if self.global_step != self.last_log_step:
+            raw = (self.global_step - self.last_log_step) / max(1e-6, (time.time() - self.last_log_time))
+        if raw == 0 and hasattr(self, "_prev_sps") and self._prev_sps:
+            return self._prev_sps
+        self._prev_sps = raw
+        return raw
+    pufferl.PuffeRL.sps = property(_patched_sps)
 
     def swap_vecenv(new_vecenv, seed: int = 0):
         """Replace the vecenv while keeping policy/optimizer state."""
@@ -148,13 +161,22 @@ def main():
 
     # === Curriculum phases ===
     log_step = args.log_every
+    ENT_WARMUP_STEPS = 5_000
+    ENT_WARMUP_MULT = 3.0
+
     def run_phase(difficulty: str, phase_steps: int):
         nonlocal vecenv
         algo.stats.clear()
         algo.last_stats.clear()
+        algo.phase_start_step = algo.global_step
         phase_end = algo.global_step + phase_steps
         next_log = algo.global_step + log_step
         while algo.global_step < phase_end and algo.global_step < args.total_steps:
+            # Entropy warmup in the first few thousand steps of this phase
+            phase_elapsed = algo.global_step - algo.phase_start_step
+            warm = ENT_WARMUP_MULT if phase_elapsed < ENT_WARMUP_STEPS else 1.0
+            algo.config["ent_coef"] = base_ent_coef * warm
+
             algo.evaluate()
             algo.train()
 

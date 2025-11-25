@@ -33,6 +33,7 @@ class SudokuEnv:
         self,
         initial_board: Optional[Board] = None,
         max_steps: int = 200,
+        solution_board: Optional[Board] = None,
     ) -> None:
         if initial_board is None:
             board = np.zeros((self.n_rows, self.n_cols), dtype=np.int8)
@@ -48,18 +49,27 @@ class SudokuEnv:
         self.max_steps: int = max_steps
         self.steps: int = 0
         self.initial_empties: int = int(np.sum(self.board == 0))
+        self.solution_board: Optional[Board] = None
+        if solution_board is not None:
+            if solution_board.shape != (self.n_rows, self.n_cols):
+                raise ValueError(f"solution_board must be 9x9, got {solution_board.shape}")
+            self.solution_board = solution_board.copy()
 
         # Derived sizes
         self.n_actions: int = self.n_rows * self.n_cols * self.n_digits
 
     # ------------- Public API -------------
 
-    def reset(self, seed: Optional[int] = None, initial_board: Optional[Board] = None) -> Board:
+    def reset(self, seed: Optional[int] = None, initial_board: Optional[Board] = None, solution_board: Optional[Board] = None) -> Board:
         if initial_board is not None:
             if initial_board.shape != (self.n_rows, self.n_cols):
                 raise ValueError(f"initial_board must be 9x9, got {initial_board.shape}")
             self.initial_board = initial_board.copy()
             self.board = self.initial_board.copy()
+            if solution_board is not None:
+                if solution_board.shape != (self.n_rows, self.n_cols):
+                    raise ValueError(f"solution_board must be 9x9, got {solution_board.shape}")
+                self.solution_board = solution_board.copy()
         else:
             # seed kept for later compatibility, not used yet
             self.board = self.initial_board.copy()
@@ -72,28 +82,16 @@ class SudokuEnv:
         action: int in [0, 729) encoding (row, col, digit).
         Returns: (obs, reward, done, info)
         """
-        # If already solved, just terminate cleanly
-        if self._is_solved():
-            obs = self.board.copy()
-            info = {
-                "illegal": False,
-                "solved": True,
-                "done": True,
-                "timeout": False,
-                "no_legal_moves": False,
-                "steps": self.steps,
-            }
-            return obs, 0.0, True, info
-        
         # --- Reward shaping constants (tune these) ---
         STEP_PENALTY     = -0.01
         ILLEGAL_PENALTY  = -1.0
         MISTAKE_PENALTY  = -0.025
-        FILL_BONUS       = 0.05
+        FILL_BONUS       = 0.10   # reward for safe progress: easier bump
         SOLVE_BONUS      = 3.0
         EMPTY_WEIGHT     = 0.02   # reward per reduction in empty cells
         VIOLATION_WEIGHT = 0.02   # reward per reduction in violations
         TIMEOUT_PENALTY  = -0.5
+        NO_LEGAL_PENALTY = -3.0   # strong signal: dead-end is costly
         # Rough guide to magnitudes (before advantage normalization):
         # - legal fill, still unsolved (empties -1, no new violations): -0.01 + 0.05 + 0.02 ≈ +0.06
         # - final solving move: previous + SOLVE_BONUS → ≈ +3.06
@@ -101,26 +99,6 @@ class SudokuEnv:
         # - wrong-digit conflict (codes 4–6): -0.01 -0.05 ≈ -0.06
         # - timeout adds -0.5 on the last step if not solved.
 
-        # If the current state has no legal moves left, terminate immediately.
-        # Without this, downstream code would mask all actions to True and the
-        # agent would thrash with illegal moves.
-        mask = legal_action_mask(self.board)
-        if not mask.any():
-            self.steps += 1
-            reward = STEP_PENALTY + ILLEGAL_PENALTY  # step penalty + illegal-style penalty
-            obs = self.board.copy()
-            info = {
-                "illegal": False,
-                "illegal_conflict": 0.0,
-                "illegal_overwrite": 0.0,
-                "illegal_code": 0,
-                "solved": False,
-                "timeout": False,
-                "no_legal_moves": True,
-                "steps": self.steps,
-                "steps_per_empty": self.steps / max(1, self.initial_empties),
-            }
-            return obs, reward, True, info
 
         self.steps += 1
         row, col, digit = self.decode_action(action)
@@ -138,11 +116,15 @@ class SudokuEnv:
         if illegal_code:
             # Board unchanged, strong negative signal
             illegal = True
-            # This doesn't make sense, breaking the rules by overwritting a number should be worse than breaking the rules by making a mistake and not seeing that you couldn't put this number?
             if illegal_code <= 3:
                 reward += ILLEGAL_PENALTY
             else:
                 reward += MISTAKE_PENALTY
+        elif self.solution_board is not None and digit != self.solution_board[row, col]:
+            # Move is locally legal but does not match the ground-truth solution.
+            illegal = True
+            illegal_code = 7  # custom code for wrong-solution digit
+            reward += MISTAKE_PENALTY * 2
         else:
             # Apply legal move
             self.board[row, col] = digit
@@ -181,6 +163,8 @@ class SudokuEnv:
             "steps": self.steps,
             "steps_per_empty": self.steps / max(1, self.initial_empties),
         }
+        for code in range(1, 8):
+            info[f"illegal_code_{code}"] = 1.0 if illegal_code == code else 0.0
         return obs, reward, done, info
 
     # ------------- Action encoding -------------

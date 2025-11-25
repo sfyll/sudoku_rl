@@ -55,9 +55,13 @@ class SudokuPufferEnv(pufferlib.PufferEnv):
         if seed is None:
             seed = self._seed
 
-        initial_board = sample_puzzle(difficulty=self.difficulty)
+        initial_board = sample_puzzle(difficulty=self.difficulty, return_solution=True)
+        if isinstance(initial_board, tuple):
+            board, solution = initial_board
+        else:
+            board, solution = initial_board, None
 
-        board = self.env.reset(seed=seed, initial_board=initial_board)
+        board = self.env.reset(seed=seed, initial_board=board, solution_board=solution)
         self._done = False
 
         # observations shape: (num_agents, 81) => (1, 81)
