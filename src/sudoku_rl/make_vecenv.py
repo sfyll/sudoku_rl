@@ -10,10 +10,11 @@ def make_sudoku_vecenv(
     max_steps: int | None = None,
     backend=None,
     num_workers: int | None = None,
+    terminate_on_wrong_digit: bool = True,
 ):
     """Create a Puffer vecenv with optional threaded/multiprocess backend."""
 
-    env_kwargs = {"bin_label": bin_label}
+    env_kwargs = {"bin_label": bin_label, "terminate_on_wrong_digit": terminate_on_wrong_digit}
     if max_steps is not None:
         env_kwargs["max_steps"] = max_steps
 

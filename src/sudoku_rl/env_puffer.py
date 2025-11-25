@@ -26,6 +26,7 @@ class SudokuPufferEnv(pufferlib.PufferEnv):
         seed: int = 0,
         max_steps: int = 10_000,
         initial_board=None,
+        terminate_on_wrong_digit: bool = True,
     ):
         # ---- Required attributes BEFORE super().__init__ ----
         self.single_observation_space = gymnasium.spaces.Box(
@@ -42,7 +43,23 @@ class SudokuPufferEnv(pufferlib.PufferEnv):
         # ---- Our own logical env (Phase 2) ----
         self._seed = seed
         self.max_steps = max_steps
-        self.env = SudokuEnv(initial_board=initial_board, max_steps=max_steps)
+        if initial_board is None:
+            board, solution = sample_puzzle(
+                bin_label=bin_label,
+                seed=seed,
+                return_solution=True,
+            )
+        elif isinstance(initial_board, tuple) and len(initial_board) == 2:
+            board, solution = initial_board
+        else:
+            raise ValueError("Provide (board, solution) tuple for initial_board, or leave it None to sample.")
+
+        self.env = SudokuEnv(
+            initial_board=board,
+            solution_board=solution,
+            max_steps=max_steps,
+            terminate_on_wrong_digit=terminate_on_wrong_digit,
+        )
         self.bin_label = bin_label
         self._done = False
 
@@ -55,14 +72,10 @@ class SudokuPufferEnv(pufferlib.PufferEnv):
         if seed is None:
             seed = self._seed
 
-        initial_board = sample_puzzle(
+        board, solution = sample_puzzle(
             bin_label=self.bin_label,
             return_solution=True,
         )
-        if isinstance(initial_board, tuple):
-            board, solution = initial_board
-        else:
-            board, solution = initial_board, None
 
         board = self.env.reset(seed=seed, initial_board=board, solution_board=solution)
         self._done = False

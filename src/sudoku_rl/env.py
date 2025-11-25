@@ -31,29 +31,24 @@ class SudokuEnv:
 
     def __init__(
         self,
-        initial_board: Optional[Board] = None,
+        initial_board: Board,
+        solution_board: Board,
         max_steps: int = 200,
-        solution_board: Optional[Board] = None,
+        terminate_on_wrong_digit: bool = True,
     ) -> None:
-        if initial_board is None:
-            board = np.zeros((self.n_rows, self.n_cols), dtype=np.int8)
-        else:
-            board = np.array(initial_board, dtype=np.int8, copy=True)
-            if board.shape != (self.n_rows, self.n_cols):
-                raise ValueError(f"initial_board must be 9x9, got {board.shape}")
-            if np.any((board < 0) | (board > 9)):
-                raise ValueError("initial_board entries must be in [0, 9]")
+        board, solution = self._validate_boards(initial_board, solution_board)
 
         self.initial_board: Board = board
         self.board: Board = board.copy()
+        self.solution_board: Board = solution
         self.max_steps: int = max_steps
         self.steps: int = 0
         self.initial_empties: int = int(np.sum(self.board == 0))
-        self.solution_board: Optional[Board] = None
-        if solution_board is not None:
-            if solution_board.shape != (self.n_rows, self.n_cols):
-                raise ValueError(f"solution_board must be 9x9, got {solution_board.shape}")
-            self.solution_board = solution_board.copy()
+        self.terminate_on_wrong_digit: bool = terminate_on_wrong_digit
+        # Track wrong-digit attempts to block repeat guesses within an episode
+        self.tried_mask = np.zeros(self.n_rows * self.n_cols * self.n_digits, dtype=bool)
+        # Track wrong-digit attempts to block repeat tries within an episode
+        self.tried_mask = np.zeros(self.n_rows * self.n_cols * self.n_digits, dtype=bool)
 
         # Derived sizes
         self.n_actions: int = self.n_rows * self.n_cols * self.n_digits
@@ -61,20 +56,19 @@ class SudokuEnv:
     # ------------- Public API -------------
 
     def reset(self, seed: Optional[int] = None, initial_board: Optional[Board] = None, solution_board: Optional[Board] = None) -> Board:
-        if initial_board is not None:
-            if initial_board.shape != (self.n_rows, self.n_cols):
-                raise ValueError(f"initial_board must be 9x9, got {initial_board.shape}")
-            self.initial_board = initial_board.copy()
-            self.board = self.initial_board.copy()
-            if solution_board is not None:
-                if solution_board.shape != (self.n_rows, self.n_cols):
-                    raise ValueError(f"solution_board must be 9x9, got {solution_board.shape}")
-                self.solution_board = solution_board.copy()
-        else:
-            # seed kept for later compatibility, not used yet
-            self.board = self.initial_board.copy()
+        if (initial_board is None) ^ (solution_board is None):
+            raise ValueError("initial_board and solution_board must be provided together")
+
+        if initial_board is not None and solution_board is not None:
+            board, solution = self._validate_boards(initial_board, solution_board)
+            self.initial_board = board
+            self.solution_board = solution
+
+        # seed kept for later compatibility, not used yet
+        self.board = self.initial_board.copy()
         self.steps = 0
         self.initial_empties = int(np.sum(self.board == 0))
+        self.tried_mask[:] = False
         return self.board.copy()
 
     def step(self, action: int) -> Tuple[Board, float, bool, Dict[str, Any]]:
@@ -112,18 +106,23 @@ class SudokuEnv:
         viol_before = count_violations(self.board)
 
         illegal_code = self._illegal_code(row, col, digit)
-        if illegal_code:
-            # Board unchanged, strong negative signal
+
+        # If this exact (row, col, digit) was already tried and marked wrong, block it immediately
+        if self.tried_mask[action]:
             illegal = True
-            if illegal_code <= 3:
-                reward += ILLEGAL_PENALTY
+            illegal_code = 8
+            reward += MISTAKE_PENALTY * 5
+        elif digit != self.solution_board[row, col]:
+            illegal = True
+            if illegal_code:
+                # Board unchanged, strong negative signal
+                if illegal_code <= 3:
+                    reward += ILLEGAL_PENALTY
+                else:
+                    reward += MISTAKE_PENALTY
             else:
-                reward += MISTAKE_PENALTY
-        elif self.solution_board is not None and digit != self.solution_board[row, col]:
-            # Move is locally legal but does not match the ground-truth solution.
-            illegal = True
-            illegal_code = 7  # custom code for wrong-solution digit
-            reward += MISTAKE_PENALTY * 2
+                illegal_code = 7  # custom code for wrong-solution digit
+                reward += MISTAKE_PENALTY * 3
         else:
             # Apply legal move
             self.board[row, col] = digit
@@ -145,11 +144,15 @@ class SudokuEnv:
                 reward += SOLVE_BONUS
                 solved_now = True
 
+        # Mark wrong attempts so we can block repeats within the episode
+        if illegal_code in (7, 8):
+            self.tried_mask[action] = True
+
         timeout = self.steps >= self.max_steps and not solved_now
         if timeout:
             reward += TIMEOUT_PENALTY
 
-        done = solved_now or timeout or (illegal_code == 7)
+        done = solved_now or timeout or (self.terminate_on_wrong_digit and illegal_code in (7, 8))
         obs = self.board.copy()
         info = {
             "illegal": illegal,
@@ -162,7 +165,7 @@ class SudokuEnv:
             "steps": self.steps,
             "steps_per_empty": self.steps / max(1, self.initial_empties),
         }
-        for code in range(1, 8):
+        for code in range(1, 9):
             info[f"illegal_code_{code}"] = 1.0 if illegal_code == code else 0.0
         return obs, reward, done, info
 
@@ -292,6 +295,28 @@ class SudokuEnv:
         if np.any(self.board == 0):
             return False
         return self._board_valid()
+
+    def _validate_boards(self, initial_board: Board, solution_board: Board) -> Tuple[Board, Board]:
+        """Validate shapes/values and ensure solution is fully specified."""
+        board = np.array(initial_board, dtype=np.int8, copy=True)
+        if board.shape != (self.n_rows, self.n_cols):
+            raise ValueError(f"initial_board must be 9x9, got {board.shape}")
+        if np.any((board < 0) | (board > 9)):
+            raise ValueError("initial_board entries must be in [0, 9]")
+
+        solution = np.array(solution_board, dtype=np.int8, copy=True)
+        if solution.shape != (self.n_rows, self.n_cols):
+            raise ValueError(f"solution_board must be 9x9, got {solution.shape}")
+        if np.any((solution < 1) | (solution > 9)):
+            raise ValueError("solution_board entries must be in [1, 9]")
+        if np.any(solution == 0):
+            raise ValueError("solution_board must be fully solved (no zeros).")
+
+        fixed_mask = board != 0
+        if np.any(board[fixed_mask] != solution[fixed_mask]):
+            raise ValueError("initial_board conflicts with solution_board at fixed cells.")
+
+        return board, solution
 
 
 def legal_action_mask(board: Board) -> np.ndarray:

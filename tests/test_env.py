@@ -23,9 +23,30 @@ def make_simple_puzzle():
     return board
 
 
+def make_simple_solution():
+    """
+    Fully solved grid consistent with make_simple_puzzle().
+    """
+    return np.array(
+        [
+            [5, 3, 4, 6, 7, 8, 9, 1, 2],
+            [6, 7, 2, 1, 9, 5, 3, 4, 8],
+            [1, 9, 8, 3, 4, 2, 5, 6, 7],
+            [8, 5, 9, 7, 6, 1, 4, 2, 3],
+            [4, 2, 6, 8, 5, 3, 7, 9, 1],
+            [7, 1, 3, 9, 2, 4, 8, 5, 6],
+            [9, 6, 1, 5, 3, 7, 2, 8, 4],
+            [2, 8, 7, 4, 1, 9, 6, 3, 5],
+            [3, 4, 5, 2, 8, 6, 1, 7, 9],
+        ],
+        dtype=np.int8,
+    )
+
+
 def test_reset_returns_initial_board_copy():
     puzzle = make_simple_puzzle()
-    env = SudokuEnv(initial_board=puzzle)
+    solution = make_simple_solution()
+    env = SudokuEnv(initial_board=puzzle, solution_board=solution)
     obs = env.reset()
 
     # Same values
@@ -38,7 +59,8 @@ def test_reset_returns_initial_board_copy():
 
 def test_illegal_move_penalized_and_not_applied():
     puzzle = make_simple_puzzle()
-    env = SudokuEnv(initial_board=puzzle)
+    solution = make_simple_solution()
+    env = SudokuEnv(initial_board=puzzle, solution_board=solution)
     env.reset()
 
     # Try to place a 5 in same row, which is illegal.
@@ -54,19 +76,19 @@ def test_illegal_move_penalized_and_not_applied():
 
 def test_valid_move_fills_cell_and_gives_shaping_reward():
     puzzle = make_simple_puzzle()
-    env = SudokuEnv(initial_board=puzzle)
+    solution = make_simple_solution()
+    env = SudokuEnv(initial_board=puzzle, solution_board=solution)
     obs0 = env.reset()
 
     before_filled = int(np.count_nonzero(obs0))
 
-    # Legal move: place '1' somewhere empty where it doesn't conflict.
-    # Here, (0, 2) with digit 1 is fine.
-    action = env.encode_action(row=0, col=2, digit=1)
+    # Legal move: place the correct digit according to the solution.
+    action = env.encode_action(row=0, col=2, digit=int(solution[0, 2]))
     obs, reward, done, info = env.step(action)
 
     after_filled = int(np.count_nonzero(obs))
 
-    assert obs[0, 2] == 1
+    assert obs[0, 2] == solution[0, 2]
     assert after_filled == before_filled + 1
     assert info["illegal"] is False
     assert reward > -0.01  # base -0.01 plus positive shaping
@@ -90,7 +112,8 @@ def test_solved_detection():
         dtype=np.int8,
     )
 
-    env = SudokuEnv(initial_board=solved)
+    solution = make_simple_solution()
+    env = SudokuEnv(initial_board=solved, solution_board=solution)
     env.reset()
 
     # Correct final move: put 9 at (8, 8)
@@ -173,8 +196,8 @@ def test_wrong_digit_against_solution_is_penalized():
 
 def test_env_handles_dataset_puzzle():
     # pick a mid bin so puzzles have enough blanks
-    board = sample_puzzle(bin_label=supported_bins()[1], seed=0)
-    env = SudokuEnv(initial_board=board)
+    board, solution = sample_puzzle(bin_label=supported_bins()[1], seed=0, return_solution=True)
+    env = SudokuEnv(initial_board=board, solution_board=solution)
 
     obs = env.reset()
 
@@ -184,9 +207,10 @@ def test_env_handles_dataset_puzzle():
 
 def test_legal_action_mask_matches_env_rules():
     puzzle = make_simple_puzzle()
+    solution = make_simple_solution()
     mask = legal_action_mask(puzzle)
 
-    env = SudokuEnv(initial_board=puzzle)
+    env = SudokuEnv(initial_board=puzzle, solution_board=solution)
     env.reset()
 
     legal_action = env.encode_action(row=0, col=2, digit=1)

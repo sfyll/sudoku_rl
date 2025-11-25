@@ -79,6 +79,7 @@ def main():
     parser.add_argument("--num_workers", type=int, default=8, help="Workers for threaded/mp backends")
     parser.add_argument("--log_every", type=int, default=500, help="Print dashboard every N global steps")
     parser.add_argument("--record_frames", action="store_true", help="Enable PuffeRL frame recording/gif output")
+    parser.add_argument("--terminate-wrong-digits-globally", action="store_true", help="Terminate if the agent hits a locally correct digit but globally wrong")
     parser.add_argument("--record_frames_count", type=int, default=200, help="How many frames to capture when recording")
     parser.add_argument("--record_gif_path", type=str, default="experiments/sudoku_eval.gif", help="Where to write the gif when recording")
     parser.add_argument("--record_fps", type=int, default=10, help="FPS for the recorded gif")
@@ -121,7 +122,6 @@ def main():
 
     # 2) Build bin curriculum from easiest upward (4-hole increments)
     bins = list(supported_bins())
-    print(f"Using bins: {bins}")
     if not bins:
         raise RuntimeError("No sudoku bins available. Generate data with scripts/create_filtered_dataset_sudoku.py")
 
@@ -133,6 +133,7 @@ def main():
         max_steps=max_steps_for_bin(first_bin),
         backend=backend_cls,
         num_workers=args.num_workers,
+        terminate_on_wrong_digit=args.terminate_wrong_digits_globally,
     )
 
     # Keep our Sudoku-specific policy instead of replacing it with the
@@ -205,7 +206,7 @@ def main():
     current_bin = first_bin
     run_phase(current_bin, phase_budgets[current_bin])
 
-    for next_bin in phase_bins[1:3]:
+    for next_bin in phase_bins[1:2]:
         vecenv.close()
         vecenv = make_sudoku_vecenv(
             next_bin,
@@ -213,6 +214,7 @@ def main():
             max_steps=max_steps_for_bin(next_bin),
             backend=backend_cls,
             num_workers=args.num_workers,
+            terminate_on_wrong_digit=args.terminate_wrong_digits_globally,
         )
         swap_vecenv(vecenv, seed=0)
         run_phase(next_bin, phase_budgets[next_bin])
