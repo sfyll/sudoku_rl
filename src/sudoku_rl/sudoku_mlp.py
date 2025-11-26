@@ -29,7 +29,7 @@ class SudokuMLP(nn.Module):
         self.net = nn.Sequential(
             pufferlib.pytorch.layer_init(nn.Linear(obs_dim, 512)),
             nn.ReLU(),
-            pufferlib.pytorch.layer_init(nn.Linear(512, 256)),
+            pufferlib.pytorch.layer_init(nn.Linear(512, 512)),
             nn.ReLU(),
         )
 

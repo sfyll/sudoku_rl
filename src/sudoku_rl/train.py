@@ -122,10 +122,10 @@ def main():
     cfg["train"]["env"] = "sudoku"
     
     # PPO CONFIG
-    cfg["train"]["learning_rate"] = 3e-4 # reduce to something smaller
+    cfg["train"]["learning_rate"] = 1e-3 # reduce to something smaller
     cfg["train"]["gae_lambda"] = 0.95 #bias-variance tradeoff. 0.95 given long-horizon problem
     cfg["train"]["update_epochs"] = 4 # update more aggressively per batch
-    cfg["train"]["ent_coef"] = 0.0002 #more exploratory
+    cfg["train"]["ent_coef"] = 0.0003 #more exploratory
     cfg["train"]["gamma"] = 0.995
     cfg["train"]["vf_coef"] = 0.8
     cfg["train"]["clip_coef"] = 0.2
@@ -160,7 +160,7 @@ def main():
         curriculum_kwargs=dict(
             initial_unlocked=2,
             window_size=200,
-            promote_threshold=0.70,
+            promote_thresholds=[0.9, 0.8, 0.6],
             demote_threshold=0.20,
             min_episodes_for_decision=100,
             alpha=2.0,

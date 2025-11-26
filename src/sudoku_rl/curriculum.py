@@ -100,6 +100,7 @@ class CurriculumManager:
         initial_unlocked: int = 2,
         window_size: int = 200,
         promote_threshold: float = 0.70,
+        promote_thresholds: Optional[Sequence[float]] = None,
         demote_threshold: float = 0.20,
         min_episodes_for_decision: int = 100,
         alpha: float = 2.0,
@@ -115,6 +116,7 @@ class CurriculumManager:
         self.bucket_defs: List[BucketDef] = list(bucket_defs)
         self.window_size = window_size
         self.promote_threshold = promote_threshold
+        self.promote_thresholds = list(promote_thresholds) if promote_thresholds is not None else None
         self.demote_threshold = demote_threshold
         self.min_episodes_for_decision = min_episodes_for_decision
         self.alpha = alpha
@@ -172,7 +174,8 @@ class CurriculumManager:
         stats = self.stats[idx]
         if stats.n < self.min_episodes_for_decision:
             return
-        if stats.clean_solve_rate < self.promote_threshold:
+        threshold = self._threshold_for(idx)
+        if stats.clean_solve_rate < threshold:
             return
 
         self._locked[next_idx] = False
@@ -187,6 +190,13 @@ class CurriculumManager:
             self._underperforming.add(j)
         else:
             self._underperforming.discard(j)
+
+    def _threshold_for(self, idx: int) -> float:
+        if self.promote_thresholds:
+            if idx < len(self.promote_thresholds):
+                return self.promote_thresholds[idx]
+            return self.promote_thresholds[-1]
+        return self.promote_threshold
 
     # --- Logging ---
     def metrics(self) -> Dict[str, float]:

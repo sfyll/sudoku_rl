@@ -59,6 +59,44 @@ def test_promotion_unlocks_next_bucket():
     assert mgr2.max_unlocked_index == 0
 
 
+def test_per_bucket_thresholds():
+    buckets = [BucketDef("b0", "b0"), BucketDef("b1", "b1"), BucketDef("b2", "b2"), BucketDef("b3", "b3")]
+    mgr = CurriculumManager(
+        buckets,
+        initial_unlocked=1,
+        window_size=5,
+        promote_thresholds=[0.9, 0.8, 0.6],
+        min_episodes_for_decision=3,
+        rng=random.Random(0),
+    )
+
+    # Bucket0 requires 0.9
+    mgr.update_after_episode(0, _summary(True, clean=True))
+    mgr.update_after_episode(0, _summary(True, clean=True))
+    mgr.update_after_episode(0, _summary(False, clean=False))  # clean rate 0.67 -> no promotion
+    assert mgr.max_unlocked_index == 0
+
+    mgr.update_after_episode(0, _summary(True, clean=True))  # clean rate now 0.75 -> still below 0.9
+    assert mgr.max_unlocked_index == 0
+
+    # push clean rate to 1.0 over window 5 (evict the earlier false)
+    mgr.update_after_episode(0, _summary(True, clean=True))
+    mgr.update_after_episode(0, _summary(True, clean=True))
+    mgr.update_after_episode(0, _summary(True, clean=True))
+    mgr.update_after_episode(0, _summary(True, clean=True))
+    assert mgr.max_unlocked_index == 1  # promoted to bucket1
+
+    # Bucket1 requires 0.8
+    mgr.update_after_episode(1, _summary(True, clean=True))
+    mgr.update_after_episode(1, _summary(True, clean=True))
+    mgr.update_after_episode(1, _summary(False, clean=False))  # clean rate 0.67 -> no promotion
+    assert mgr.max_unlocked_index == 1
+
+    mgr.update_after_episode(1, _summary(True, clean=True))  # clean rate 0.75 -> still below 0.8
+    mgr.update_after_episode(1, _summary(True, clean=True))  # clean rate 0.8 -> promote to bucket2
+    assert mgr.max_unlocked_index == 2
+
+
 def test_sampling_prefers_mid_proficiency():
     buckets = [BucketDef("easy", "easy"), BucketDef("mid", "mid")]
     mgr = CurriculumManager(
