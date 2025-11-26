@@ -4,7 +4,7 @@ import pytest
 
 from sudoku_rl import SudokuEnv
 from sudoku_rl.puzzle import sample_puzzle, supported_bins
-from sudoku_rl.env import legal_action_mask, count_violations
+from sudoku_rl.env import legal_action_mask, count_violations, board_entropy
 
 
 def make_simple_puzzle():
@@ -70,28 +70,33 @@ def test_illegal_move_penalized_and_not_applied():
     # Board must be unchanged at that location.
     assert obs[0, 2] == 0
     assert info["illegal"] is True
-    assert reward < 0  # negative signal for illegal move
+    assert reward == 0.0  # entropy unchanged -> zero reward
+    assert info["entropy_delta"] == 0.0
     assert done is False  # we don't terminate on illegal moves
 
 
-def test_valid_move_fills_cell_and_gives_shaping_reward():
+def test_valid_move_fills_cell_and_gives_entropy_reward():
     puzzle = make_simple_puzzle()
     solution = make_simple_solution()
     env = SudokuEnv(initial_board=puzzle, solution_board=solution)
     obs0 = env.reset()
 
     before_filled = int(np.count_nonzero(obs0))
+    entropy_before = board_entropy(obs0, SudokuEnv.ENTROPY_EMPTY_WEIGHT)
 
     # Legal move: place the correct digit according to the solution.
     action = env.encode_action(row=0, col=2, digit=int(solution[0, 2]))
     obs, reward, done, info = env.step(action)
 
     after_filled = int(np.count_nonzero(obs))
+    entropy_after = board_entropy(obs, SudokuEnv.ENTROPY_EMPTY_WEIGHT)
+    expected_delta = entropy_before - entropy_after
 
     assert obs[0, 2] == solution[0, 2]
     assert after_filled == before_filled + 1
     assert info["illegal"] is False
-    assert reward > -0.01  # base -0.01 plus positive shaping
+    assert np.isclose(reward, expected_delta)
+    assert np.isclose(info["entropy_delta"], expected_delta)
     assert done is False
 
 
@@ -116,14 +121,19 @@ def test_solved_detection():
     env = SudokuEnv(initial_board=solved, solution_board=solution)
     env.reset()
 
+    entropy_before = board_entropy(solved, SudokuEnv.ENTROPY_EMPTY_WEIGHT)
+
     # Correct final move: put 9 at (8, 8)
     action = env.encode_action(row=8, col=8, digit=9)
     obs, reward, done, info = env.step(action)
 
+    entropy_after = board_entropy(obs, SudokuEnv.ENTROPY_EMPTY_WEIGHT)
+    expected_reward = (entropy_before - entropy_after) + SudokuEnv.SOLVE_BONUS
+
     assert obs[8, 8] == 9
     assert info["solved"] is True
     assert done is True
-    assert reward > 0.9  # base -0.01 + shaping + solve bonus
+    assert np.isclose(reward, expected_reward)
 
 
 def test_wrong_digit_ends_episode():
@@ -155,15 +165,15 @@ def test_wrong_digit_ends_episode():
     action = env.encode_action(row=row, col=col, digit=wrong_digit)
     _, reward, done, info = env.step(action)
 
-    assert info["illegal"] is True
-    assert info["illegal_code"] == 7
+    assert info["illegal"] is False
+    assert info["wrong_digit"] is True
     assert done is True
-    assert reward < 0
+    assert np.isclose(reward, -SudokuEnv.WRONG_DIGIT_PENALTY)
 
 
 def test_wrong_digit_against_solution_is_penalized():
     board, solution = sample_puzzle(bin_label=supported_bins()[0], seed=0, return_solution=True)
-    env = SudokuEnv(initial_board=board, solution_board=solution)
+    env = SudokuEnv(initial_board=board, solution_board=solution, terminate_on_wrong_digit=False)
     env.reset()
 
     # Find an empty cell with >1 locally legal digit, pick a legal-but-wrong digit.
@@ -186,12 +196,13 @@ def test_wrong_digit_against_solution_is_penalized():
     row, col, wrong_digit, correct_digit = target
 
     action = env.encode_action(row=row, col=col, digit=wrong_digit)
-    _, reward, done, info = env.step(action)
+    obs, reward, done, info = env.step(action)
 
-    assert info["illegal"] is True
-    assert info["illegal_code"] == 7
-    assert done is True  # wrong solution is terminal
-    assert reward < 0  # mistake penalty applied
+    assert info["illegal"] is False
+    assert info["wrong_digit"] is True
+    assert done is False  # termination disabled
+    assert obs[row, col] == 0  # board unchanged on wrong-digit
+    assert np.isclose(reward, -SudokuEnv.WRONG_DIGIT_PENALTY)
 
 
 def test_env_handles_dataset_puzzle():

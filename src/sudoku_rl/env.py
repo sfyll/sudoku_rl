@@ -25,6 +25,14 @@ class SudokuEnv:
     - Action: integer in [0, 9*9*9), encoding (row, col, digit).
     """
 
+    # Reward scalars (entropy-driven)
+    SOLVE_BONUS: float = 10.0
+    WRONG_DIGIT_PENALTY: float = 3.0
+    # If an action would push the board into a state with zero candidates,
+    # we treat that as high-entropy (unsolvable) rather than crashing.
+    UNSOLVABLE_PENALTY: float = 20.0
+    ENTROPY_EMPTY_WEIGHT: float = 0.5
+
     n_rows: int = 9
     n_cols: int = 9
     n_digits: int = 9
@@ -44,11 +52,11 @@ class SudokuEnv:
         self.max_steps: int = max_steps
         self.steps: int = 0
         self.initial_empties: int = int(np.sum(self.board == 0))
-        self.terminate_on_wrong_digit: bool = terminate_on_wrong_digit
-        # Track wrong-digit attempts to block repeat guesses within an episode
-        self.tried_mask = np.zeros(self.n_rows * self.n_cols * self.n_digits, dtype=bool)
+        self.start_entropy: float = board_entropy(self.board, self.ENTROPY_EMPTY_WEIGHT)
+        self.total_reward: float = 0.0
+        self.total_entropy_delta: float = 0.0
         self.wrong_digit_count: int = 0
-        self.repeat_wrong_count: int = 0
+        self.terminate_on_wrong_digit: bool = terminate_on_wrong_digit
 
         # Derived sizes
         self.n_actions: int = self.n_rows * self.n_cols * self.n_digits
@@ -68,9 +76,10 @@ class SudokuEnv:
         self.board = self.initial_board.copy()
         self.steps = 0
         self.initial_empties = int(np.sum(self.board == 0))
-        self.tried_mask[:] = False
+        self.start_entropy = board_entropy(self.board, self.ENTROPY_EMPTY_WEIGHT)
+        self.total_reward = 0.0
+        self.total_entropy_delta = 0.0
         self.wrong_digit_count = 0
-        self.repeat_wrong_count = 0
         return self.board.copy()
 
     def step(self, action: int) -> Tuple[Board, float, bool, Dict[str, Any]]:
@@ -78,107 +87,61 @@ class SudokuEnv:
         action: int in [0, 729) encoding (row, col, digit).
         Returns: (obs, reward, done, info)
         """
-        # --- Reward shaping constants (tune these) ---
-        STEP_PENALTY     = -0.01
-        ILLEGAL_PENALTY  = -1.0
-        MISTAKE_PENALTY  = -0.1
-        FILL_BONUS       = 0.20   # reward for safe progress: easier bump
-        SOLVE_BONUS      = 3.0
-        EMPTY_WEIGHT     = 0.02   # reward per reduction in empty cells
-        VIOLATION_WEIGHT = 0.02   # reward per reduction in violations
-        TIMEOUT_PENALTY  = -0.5
-        NO_LEGAL_PENALTY = -3.0   # strong signal: dead-end is costly
-        # Rough guide to magnitudes (before advantage normalization):
-        # - legal fill, still unsolved (empties -1, no new violations): -0.01 + 0.05 + 0.02 ≈ +0.06
-        # - final solving move: previous + SOLVE_BONUS → ≈ +3.06
-        # - illegal overwrite (codes 1–3): -0.01 -1.0 ≈ -1.01
-        # - wrong-digit conflict (codes 4–6): -0.01 -0.05 ≈ -0.06
-        # - timeout adds -0.5 on the last step if not solved.
-
-
         self.steps += 1
         row, col, digit = self.decode_action(action)
 
-        reward = STEP_PENALTY
-        illegal = False
-        solved_now = False
-
-        # Pre-move stats for dense shaping
-        empties_before = count_empties(self.board)
-        viol_before = count_violations(self.board)
-
+        reward = 0.0
         illegal_code = self._illegal_code(row, col, digit)
+        illegal = illegal_code != 0
+        wrong_digit = False
+        solved_now = False
+        entropy_delta = 0.0
 
-        # If this exact (row, col, digit) was already tried and marked wrong, block it immediately
-        if self.tried_mask[action]:
-            illegal = True
-            illegal_code = 8
-            reward += MISTAKE_PENALTY * 5
-            self.repeat_wrong_count += 1
+        entropy_before = board_entropy(self.board, self.ENTROPY_EMPTY_WEIGHT)
+
+        if illegal:
+            entropy_after = entropy_before
         elif digit != self.solution_board[row, col]:
-            illegal = True
-            if illegal_code:
-                # Board unchanged, strong negative signal
-                if illegal_code <= 3:
-                    reward += ILLEGAL_PENALTY
-                else:
-                    reward += MISTAKE_PENALTY
-            else:
-                illegal_code = 7  # custom code for wrong-solution digit
-                reward += MISTAKE_PENALTY * 3
+            wrong_digit = True
+            entropy_after = entropy_before
+            entropy_delta = 0.0
+            reward -= self.WRONG_DIGIT_PENALTY
             self.wrong_digit_count += 1
         else:
-            # Apply legal move
+            # Apply legal, solution-consistent move
             self.board[row, col] = digit
+            entropy_after = board_entropy(self.board, self.ENTROPY_EMPTY_WEIGHT)
+            if np.isfinite(entropy_after):
+                entropy_delta = entropy_before - entropy_after
+            else:
+                # Something made the puzzle unsatisfiable; treat as strong penalty.
+                print("Unsolvable!")
+                entropy_delta = -self.UNSOLVABLE_PENALTY
+            reward += entropy_delta
 
-            # Small bonus for filling an empty cell
-            reward += FILL_BONUS
-
-            # Progress on empties
-            empties_after = count_empties(self.board)
-            reward += EMPTY_WEIGHT * (empties_before - empties_after)
-
-            # Progress on global constraints (will be 0 as long as all moves keep board valid,
-            # but becomes useful if you later relax _is_valid_move)
-            viol_after = count_violations(self.board)
-            reward += VIOLATION_WEIGHT * (viol_before - viol_after)
-
-            # Terminal bonus
             if self._is_solved():
-                reward += SOLVE_BONUS
+                reward += self.SOLVE_BONUS
                 solved_now = True
 
         timeout = self.steps >= self.max_steps and not solved_now
-        if timeout:
-            reward += TIMEOUT_PENALTY
 
-        # Mark wrong attempts so we can block repeats within the episode
-        if illegal_code in (7, 8):
-            self.tried_mask[action] = True
+        done = solved_now or timeout or (self.terminate_on_wrong_digit and wrong_digit)
+        # Track episodic accumulators
+        self.total_reward += reward
+        self.total_entropy_delta += entropy_delta
 
-        done = solved_now or timeout or (self.terminate_on_wrong_digit and illegal_code in (7, 8))
         obs = self.board.copy()
         info = {
             "illegal": illegal,
-            "illegal_code": illegal_code,
-            "illegal_conflict": 1.0 if illegal_code in (4, 5, 6) else 0.0,
-            "illegal_overwrite": 1.0 if illegal_code == 3 else 0.0,
             "solved": solved_now,
             "timeout": timeout,
-            "no_legal_moves": False,
             "steps": self.steps,
-            "steps_per_empty": self.steps / max(1, self.initial_empties),
-            "wrong_digit_count": float(self.wrong_digit_count),
-            "repeat_wrong_count": float(self.repeat_wrong_count),
-            "wrong_digit_per_empty": float(self.wrong_digit_count) / max(1, self.initial_empties),
-            "repeat_wrong_per_empty": float(self.repeat_wrong_count) / max(1, self.initial_empties),
+            "wrong_digit": wrong_digit,
+            "entropy_before": float(entropy_before),
+            "entropy_after": float(entropy_after),
+            "entropy_delta": float(entropy_delta),
         }
-        for code in range(1, 9):
-            info[f"illegal_code_{code}"] = 1.0 if illegal_code == code else 0.0
 
-        if done:
-            clean_solve = solved_now and self.wrong_digit_count == 0 and self.repeat_wrong_count == 0
-            info["clean_solve"] = 1.0 if clean_solve else 0.0
         return obs, reward, done, info
 
     # ------------- Action encoding -------------
@@ -399,3 +362,37 @@ def count_violations(board: Board) -> int:
 def count_empties(board: Board) -> int:
     """Return number of empty cells (zeros)."""
     return int(np.sum(board == 0))
+
+
+def candidate_count(board: Board, row: int, col: int) -> int:
+    """
+    Number of digits 1..9 that can legally be placed at (row, col)
+    given the current board constraints. Returns 0 for already-filled cells.
+    """
+    if board[row, col] != 0:
+        return 0
+
+    block_row = (row // 3) * 3
+    block_col = (col // 3) * 3
+    block = board[block_row:block_row + 3, block_col:block_col + 3]
+
+    used = set(board[row, :]) | set(board[:, col]) | set(block.reshape(-1))
+    used.discard(0)
+    return 9 - len(used)
+
+
+def board_entropy(board: Board, entropy_empty_weight: float = 0.0) -> float:
+    """
+    Sum of log candidate counts across empty cells.
+    Lower is better; solved boards have entropy 0.
+    """
+    entropy = 0.0
+    for r in range(9):
+        for c in range(9):
+            if board[r, c] != 0:
+                continue
+            count = candidate_count(board, r, c)
+            if count == 0:
+                return float("inf")
+            entropy += float(np.log(count)) + entropy_empty_weight
+    return float(entropy)

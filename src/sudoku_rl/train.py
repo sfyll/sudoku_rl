@@ -71,7 +71,7 @@ class TensorboardLogger:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--device", default="mps")
-    parser.add_argument("--total_steps", type=int, default=400_000)
+    parser.add_argument("--total_steps", type=int, default=200_000)
     parser.add_argument("--num_envs", type=int, default=64)
     parser.add_argument("--bptt_horizon", type=int, default=32)
     parser.add_argument("--minibatch_size", type=int, default=256)
@@ -110,6 +110,15 @@ def main():
     cfg["rnn_name"] = None
     cfg["train"]["use_rnn"] = False
     cfg["train"]["env"] = "sudoku"
+    
+    # PPO CONFIG
+    cfg["train"]["learning_rate"] = 3e-4 # reduce to something smaller
+    cfg["train"]["gae_lambda"] = 0.95 #bias-variance tradeoff. 0.95 given long-horizon problem
+    cfg["train"]["update_epochs"] = 4 # update more aggressively per batch
+    cfg["train"]["ent_coef"] = 0.0002 #more exploratory
+    cfg["train"]["gamma"] = 0.995
+    cfg["train"]["vf_coef"] = 0.8
+    cfg["train"]["clip_coef"] = 0.2
 
     # Optional recording: PuffeRL uses base-level flags for frame saving
     cfg["base"]["save_frames"] = args.record_frames
@@ -185,8 +194,8 @@ def main():
         while algo.global_step < phase_end and algo.global_step < args.total_steps:
             # Entropy warmup in the first few thousand steps of this phase
             phase_elapsed = algo.global_step - algo.phase_start_step
-            warm = ENT_WARMUP_MULT if phase_elapsed < ENT_WARMUP_STEPS else 1.0
-            algo.config["ent_coef"] = base_ent_coef * warm
+            #warm = ENT_WARMUP_MULT if phase_elapsed < ENT_WARMUP_STEPS else 1.0
+            #algo.config["ent_coef"] = base_ent_coef * warm
 
             algo.evaluate()
             algo.train()

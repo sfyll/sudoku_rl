@@ -65,6 +65,8 @@ class SudokuPufferEnv(pufferlib.PufferEnv):
         )
         self.bin_label = bin_label
         self._done = False
+        self.return_min_seen: float | None = None
+        self.return_max_seen: float | None = None
 
         # ---- Let Puffer allocate buffers ----
         super().__init__(buf)
@@ -117,10 +119,31 @@ class SudokuPufferEnv(pufferlib.PufferEnv):
             # Add episode-level stats to info; PufferLib will average these
             # across steps since the last log.
             info = info.copy()
-            info["steps_in_episode"] = self.env.steps
-            info["solved_episode"] = 1.0 if info.get("solved") else 0.0
-            info["steps_per_empty"] = self.env.steps / max(1, self.env.initial_empties)
-            infos = [info]
+            steps_in_episode = self.env.steps
+            start_entropy = self.env.start_entropy
+            total_return = self.env.total_reward  # cumulative reward
+            entropy_delta_sum = self.env.total_entropy_delta
+            wrong_digit_rate = self.env.wrong_digit_count / max(1, steps_in_episode)
+
+            self.return_min_seen = total_return if self.return_min_seen is None else min(self.return_min_seen, total_return)
+            self.return_max_seen = total_return if self.return_max_seen is None else max(self.return_max_seen, total_return)
+
+            # Minimal, de-duplicated dashboard metrics
+            infos = [{
+                    "env/cumulative_reward": float(total_return),
+                    "env/cumulative_reward_min": float(self.return_min_seen),
+                    "env/cumulative_reward_max": float(self.return_max_seen),
+                    "env/episode_length": float(steps_in_episode),
+                    "env/steps_per_empty_mean": self.env.steps / max(1, self.env.initial_empties),
+                    "env/solve_rate": 1.0 if info.get("solved") else 0.0,
+                    "env/clean_solve_rate": 1.0 if info.get("solved") and self.env.wrong_digit_count == 0 else 0.0,
+                    "env/timeout_rate": 1.0 if info.get("timeout") else 0.0,
+                    "env/illegal_rate": 1.0 if info.get("illegal") else 0.0,
+                    "env/wrong_digit_rate": float(wrong_digit_rate),
+                    "env/start_entropy_mean": float(start_entropy),
+                    "env/avg_entropy_delta_per_episode": float(entropy_delta_sum / max(1, steps_in_episode)),
+                }
+            ]
 
             # Leave observations as-is; Serial backend will call reset
             # before the next step when it sees env.done
