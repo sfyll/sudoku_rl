@@ -7,7 +7,7 @@ import gymnasium
 
 from .env import SudokuEnv
 from .puzzle import sample_puzzle
-from .curriculum import EpisodeSummary
+from .curriculum import EpisodeSummary, CurriculumManager, BucketDef
 
 
 class SudokuPufferEnv(pufferlib.PufferEnv):
@@ -29,6 +29,8 @@ class SudokuPufferEnv(pufferlib.PufferEnv):
         initial_board=None,
         terminate_on_wrong_digit: bool = True,
         prev_mix_ratio: float = 0.3,
+        bucket_defs=None,
+        curriculum_kwargs=None,
     ):
         # ---- Required attributes BEFORE super().__init__ ----
         self.single_observation_space = gymnasium.spaces.Box(
@@ -51,17 +53,23 @@ class SudokuPufferEnv(pufferlib.PufferEnv):
         self.current_bucket_index = 0
         self.curriculum_stage = 0
         self.last_summary: EpisodeSummary | None = None
-        if initial_board is None:
-            board, solution = sample_puzzle(
-                bin_label=self.current_bin_label,
-                seed=seed,
-                return_solution=True,
-                prev_mix_ratio=prev_mix_ratio,
-            )
-        elif isinstance(initial_board, tuple) and len(initial_board) == 2:
-            board, solution = initial_board
+        # Curriculum (per-env) setup
+        if bucket_defs is not None:
+            self.bucket_defs = bucket_defs
         else:
-            raise ValueError("Provide (board, solution) tuple for initial_board, or leave it None to sample.")
+            self.bucket_defs = [BucketDef(id=bin_label or "default", bin_label=bin_label or "default")]
+        self.curriculum = CurriculumManager(
+            self.bucket_defs,
+            **(curriculum_kwargs or {}),
+        )
+
+        # Initial puzzle
+        board, solution = sample_puzzle(
+            bin_label=self.bucket_defs[0].bin_label,
+            seed=seed,
+            return_solution=True,
+            prev_mix_ratio=prev_mix_ratio,
+        )
 
         self.env = SudokuEnv(
             initial_board=board,
@@ -83,8 +91,17 @@ class SudokuPufferEnv(pufferlib.PufferEnv):
         if seed is None:
             seed = self._seed
 
+        bucket_idx = self.curriculum.choose_bucket()
+        bucket = self.bucket_defs[bucket_idx]
+        self.set_curriculum_bucket(
+            bucket_id=bucket.id,
+            bin_label=bucket.bin_label,
+            bucket_index=bucket_idx,
+            stage=self.curriculum.max_unlocked_index,
+        )
+
         board, solution = sample_puzzle(
-            bin_label=self.current_bin_label or self.bin_label,
+            bin_label=self.current_bin_label,
             return_solution=True,
             prev_mix_ratio=self.prev_mix_ratio,
         )
@@ -139,6 +156,10 @@ class SudokuPufferEnv(pufferlib.PufferEnv):
                 length=int(steps_in_episode),
             )
 
+            # Update per-env curriculum
+            if self.curriculum is not None:
+                self.curriculum.update_after_episode(self.current_bucket_index, self.last_summary)
+
             self.return_min_seen = total_return if self.return_min_seen is None else min(self.return_min_seen, total_return)
             self.return_max_seen = total_return if self.return_max_seen is None else max(self.return_max_seen, total_return)
 
@@ -156,7 +177,7 @@ class SudokuPufferEnv(pufferlib.PufferEnv):
                     "env/wrong_digit_rate": float(wrong_digit_rate),
                     "env/start_entropy_mean": float(start_entropy),
                     "env/avg_entropy_delta_per_episode": float(entropy_delta_sum / max(1, steps_in_episode)),
-                    "curriculum/max_unlocked_index": float(self.curriculum_stage),
+                    "curriculum/max_unlocked_index": float(self.curriculum.max_unlocked_index if self.curriculum else self.curriculum_stage),
                 }
             ]
 
@@ -253,7 +274,6 @@ class SudokuPufferEnv(pufferlib.PufferEnv):
 
     # ---- Curriculum helpers ----
     def set_curriculum_bucket(self, *, bucket_id: str, bin_label: str, bucket_index: int, stage: int):
-        """Called by the trainer-side curriculum hook before reset."""
         self.current_bucket_id = bucket_id
         self.current_bin_label = bin_label
         self.current_bucket_index = bucket_index

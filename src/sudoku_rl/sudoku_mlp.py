@@ -1,13 +1,12 @@
 import numpy as np
 import torch
 import torch.nn as nn
-import torch._dynamo as dynamo
 import pufferlib.vector
 import pufferlib.ocean
 from pufferlib import pufferl
 
 from .env import legal_action_mask
-from .mask_fast import legal_action_mask_fast
+from .mask_torch import legal_action_mask_torch
 
 class SudokuMLP(nn.Module):
     """
@@ -63,22 +62,9 @@ class SudokuMLP(nn.Module):
     def forward(self, observations, state=None):
         return self.forward_eval(observations, state)
 
-    @dynamo.disable  # mask building is numpy-heavy; keep it out of Torch compile graph
     def _build_action_mask(self, observations, device):
-        obs_np = observations.detach().cpu().numpy()
-        masks = []
-        for obs in obs_np:
-            board = obs.reshape(9, 9).astype(np.int8)
-            try:
-                mask_np = legal_action_mask_fast(board)
-            except Exception:
-                mask_np = legal_action_mask(board)
-            if not mask_np.any():
-                mask_np[:] = True
-            masks.append(mask_np)
-
-        mask = torch.as_tensor(np.stack(masks), device=device, dtype=torch.bool)
-        return mask
+        mask = legal_action_mask_torch(observations)
+        return mask.to(device=device)
 
 
 if __name__ == "__main__":

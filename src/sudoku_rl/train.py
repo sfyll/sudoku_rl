@@ -35,59 +35,9 @@ from .make_vecenv import make_sudoku_vecenv
 from .sudoku_mlp import SudokuMLP
 from .env_puffer import SudokuPufferEnv
 from .puzzle import supported_bins
-from .curriculum import CurriculumManager, build_default_buckets
+from .curriculum import build_default_buckets
 
 import imageio
-
-
-def _attach_curriculum(vecenv, curriculum: CurriculumManager):
-    """Patch vecenv so curriculum controls bucket selection per episode.
-
-    Notes:
-    - Requires Serial backend (env objects live in the main process).
-    - Stats are updated just before the env is reset inside vecenv.send.
-    """
-
-    if not hasattr(vecenv, "envs"):
-        raise RuntimeError("Curriculum requires Serial backend so env instances are accessible")
-
-    orig_async_reset = vecenv.async_reset
-    orig_send = vecenv.send
-
-    def _seed_envs_with_buckets():
-        for env in vecenv.envs:
-            idx = curriculum.choose_bucket()
-            bucket = curriculum.bucket_defs[idx]
-            env.set_curriculum_bucket(
-                bucket_id=bucket.id,
-                bin_label=bucket.bin_label,
-                bucket_index=idx,
-                stage=curriculum.max_unlocked_index,
-            )
-
-    def async_reset_with_curriculum(seed=None):
-        _seed_envs_with_buckets()
-        return orig_async_reset(seed)
-
-    def send_with_curriculum(actions):
-        for env in vecenv.envs:
-            if env.done and env.last_summary is not None:
-                curriculum.update_after_episode(env.current_bucket_index, env.last_summary)
-                env.last_summary = None
-            if env.done:
-                idx = curriculum.choose_bucket()
-                bucket = curriculum.bucket_defs[idx]
-                env.set_curriculum_bucket(
-                    bucket_id=bucket.id,
-                    bin_label=bucket.bin_label,
-                    bucket_index=idx,
-                    stage=curriculum.max_unlocked_index,
-                )
-        return orig_send(actions)
-
-    vecenv.async_reset = async_reset_with_curriculum
-    vecenv.send = send_with_curriculum
-
 def _parse_bin(label: str) -> tuple[int, int]:
     parts = label.split("_")
     if len(parts) != 3:
@@ -120,12 +70,12 @@ class TensorboardLogger:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--device", default="auto", help="Device string (cpu, cuda, cuda:1, mps, or auto)")
+    parser.add_argument("--device", default="cpu", help="Device string (cpu, cuda, cuda:1, mps, or auto)")
     parser.add_argument("--total_steps", type=int, default=10_000_000)
     parser.add_argument("--num_envs", type=int, default=128)
     parser.add_argument("--bptt_horizon", type=int, default=32)
     parser.add_argument("--minibatch_size", type=int, default=256)
-    parser.add_argument("--backend", type=str, default="serial", choices=["serial", "mp"], help="Vecenv backend (curriculum currently expects serial)")
+    parser.add_argument("--backend", type=str, default="mp", choices=["serial", "mp"], help="Vecenv backend (curriculum currently expects serial)")
     parser.add_argument("--num_workers", type=int, default=8, help="Workers for threaded/mp backends")
     parser.add_argument("--log_every", type=int, default=5000, help="Print dashboard every N global steps")
     parser.add_argument("--record_frames", action="store_true", help="Enable PuffeRL frame recording/gif output")
@@ -134,7 +84,6 @@ def main():
     parser.add_argument("--record_gif_path", type=str, default="experiments/sudoku_eval.gif", help="Where to write the gif when recording")
     parser.add_argument("--record_fps", type=int, default=10, help="FPS for the recorded gif")
     parser.add_argument("--tb_logdir", type=str, default="runs/sudoku", help="TensorBoard log directory (set empty to disable)")
-    parser.add_argument("--disable-curriculum", action="store_true", help="Run without curriculum sampling (fixed easiest bin)")
     args = parser.parse_args()
 
     # Mute noisy warnings (pynvml deprecation, cuda-not-available on CPU/MPS, torch elastic redirects)
@@ -207,6 +156,17 @@ def main():
         num_workers=args.num_workers,
         terminate_on_wrong_digit=args.terminate_wrong_digits_globally,
         prev_mix_ratio=0.0,
+        bucket_defs=bucket_defs,
+        curriculum_kwargs=dict(
+            initial_unlocked=2,
+            window_size=200,
+            promote_threshold=0.70,
+            demote_threshold=0.20,
+            min_episodes_for_decision=100,
+            alpha=2.0,
+            eps=0.05,
+            underperforming_weight=0.3,
+        ),
     )
 
     # Keep our Sudoku-specific policy instead of replacing it with the
@@ -231,23 +191,6 @@ def main():
 
     pufferl.PuffeRL.sps = property(_patched_sps)
 
-    curriculum = None
-    if not args.disable_curriculum:
-        if backend_cls is not pufferlib.vector.Serial:
-            raise RuntimeError("Curriculum currently requires the serial backend")
-        curriculum = CurriculumManager(
-            bucket_defs,
-            initial_unlocked=2,
-            window_size=200,
-            promote_threshold=0.70,
-            demote_threshold=0.20,
-            min_episodes_for_decision=100,
-            alpha=2.0,
-            eps=0.05,
-            underperforming_weight=0.3,
-        )
-        _attach_curriculum(vecenv, curriculum)
-
     log_step = args.log_every
     next_log = log_step
     while algo.global_step < args.total_steps:
@@ -256,15 +199,10 @@ def main():
 
         while algo.global_step >= next_log:
             algo.print_dashboard()
-            if tb_logger and curriculum:
-                tb_logger.log(curriculum.metrics(), algo.global_step)
             next_log += log_step
 
     print("Training finished")
     if tb_logger:
-        # Emit final curriculum snapshot
-        if curriculum:
-            tb_logger.log(curriculum.metrics(), algo.global_step)
         tb_logger.close()
     vecenv.close()
 
