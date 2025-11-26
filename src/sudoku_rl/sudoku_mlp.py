@@ -27,17 +27,17 @@ class SudokuMLP(nn.Module):
 
         # Shared trunk: feature extractor
         self.net = nn.Sequential(
-            pufferlib.pytorch.layer_init(nn.Linear(obs_dim, 256)),
+            pufferlib.pytorch.layer_init(nn.Linear(obs_dim, 512)),
             nn.ReLU(),
-            pufferlib.pytorch.layer_init(nn.Linear(256, 256)),
+            pufferlib.pytorch.layer_init(nn.Linear(512, 256)),
             nn.ReLU(),
         )
 
         # Policy head: maps shared features -> action logits
-        self.action_head = nn.Linear(256, act_dim)
+        self.action_head = nn.Linear(512, act_dim)
 
         # Value head: maps shared features -> scalar state value
-        self.value_head = nn.Linear(256, 1)
+        self.value_head = nn.Linear(512, 1)
 
     def forward_eval(self, observations, state=None):
         """
