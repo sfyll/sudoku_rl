@@ -372,13 +372,9 @@ def candidate_count(board: Board, row: int, col: int) -> int:
     if board[row, col] != 0:
         return 0
 
-    block_row = (row // 3) * 3
-    block_col = (col // 3) * 3
-    block = board[block_row:block_row + 3, block_col:block_col + 3]
-
-    used = set(board[row, :]) | set(board[:, col]) | set(block.reshape(-1))
-    used.discard(0)
-    return 9 - len(used)
+    row_mask, col_mask, block_mask, block_grid = _masks_from_board(board)
+    mask = row_mask[row] | col_mask[col] | block_grid[row, col]
+    return 9 - int(mask.bit_count())
 
 
 def board_entropy(board: Board, entropy_empty_weight: float = 0.0) -> float:
@@ -386,13 +382,44 @@ def board_entropy(board: Board, entropy_empty_weight: float = 0.0) -> float:
     Sum of log candidate counts across empty cells.
     Lower is better; solved boards have entropy 0.
     """
-    entropy = 0.0
+    row_mask, col_mask, block_mask, block_grid = _masks_from_board(board)
+    empties = board == 0
+    if not np.any(empties):
+        return 0.0
+
+    union = (row_mask[:, None] | col_mask[None, :] | block_grid).astype(np.uint16)
+    union = np.bitwise_and(union, 0x1FF)[empties]
+    popcounts = np.frompyfunc(int.bit_count, 1, 1)(union.astype(int)).astype(np.int8)
+    counts = 9 - popcounts
+    if np.any(counts == 0):
+        return float("inf")
+    entropy = float(np.log(counts.astype(np.float64)).sum()) + entropy_empty_weight * float(len(counts))
+    return entropy
+
+
+def _masks_from_board(board: Board):
+    board = np.asarray(board, dtype=np.int8)
+    if board.shape != (9, 9):
+        raise ValueError(f"board must be 9x9, got {board.shape}")
+
+    row_mask = np.zeros(9, dtype=np.uint16)
+    col_mask = np.zeros(9, dtype=np.uint16)
+    block_mask = np.zeros(9, dtype=np.uint16)
+
+    nonzero = board != 0
+    if np.any(nonzero):
+        rows, cols = np.nonzero(nonzero)
+        vals = board[rows, cols]
+        bits = np.left_shift(np.uint16(1), vals.astype(np.int32) - 1)
+        for r, c, b in zip(rows, cols, bits):
+            row_mask[r] |= b
+            col_mask[c] |= b
+            block_idx = (r // 3) * 3 + (c // 3)
+            block_mask[block_idx] |= b
+
+    block_grid = np.empty((9, 9), dtype=np.uint16)
     for r in range(9):
         for c in range(9):
-            if board[r, c] != 0:
-                continue
-            count = candidate_count(board, r, c)
-            if count == 0:
-                return float("inf")
-            entropy += float(np.log(count)) + entropy_empty_weight
-    return float(entropy)
+            block_grid[r, c] = block_mask[(r // 3) * 3 + (c // 3)]
+
+    return row_mask, col_mask, block_mask, block_grid

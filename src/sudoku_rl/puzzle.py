@@ -223,7 +223,11 @@ def sample_puzzle(
     selected_bin = _choose_bin(bin_label)
 
     pool = get_puzzle_pool(selected_bin)
-    idx = seed if seed is not None else random.randrange(len(pool))
+    # Use seed for reproducible sampling without exceeding pool length.
+    if seed is None:
+        idx = random.randrange(len(pool))
+    else:
+        idx = seed % len(pool)
     row = pool[idx]
     puzzle_str = row["puzzle"] if isinstance(row, dict) else row
     solution_str = row.get("solution") if isinstance(row, dict) else None

@@ -1,0 +1,146 @@
+[
+  {
+    "label": "zeros_00_03",
+    "path": "sudoku_zeros_00_03.csv",
+    "rows": 0,
+    "zeros_range": [
+      0,
+      3
+    ]
+  },
+  {
+    "label": "zeros_04_07",
+    "path": "sudoku_zeros_04_07.csv",
+    "rows": 116,
+    "zeros_range": [
+      4,
+      7
+    ]
+  },
+  {
+    "label": "zeros_08_11",
+    "path": "sudoku_zeros_08_11.csv",
+    "rows": 1029,
+    "zeros_range": [
+      8,
+      11
+    ]
+  },
+  {
+    "label": "zeros_12_15",
+    "path": "sudoku_zeros_12_15.csv",
+    "rows": 4998,
+    "zeros_range": [
+      12,
+      15
+    ]
+  },
+  {
+    "label": "zeros_16_19",
+    "path": "sudoku_zeros_16_19.csv",
+    "rows": 17586,
+    "zeros_range": [
+      16,
+      19
+    ]
+  },
+  {
+    "label": "zeros_20_23",
+    "path": "sudoku_zeros_20_23.csv",
+    "rows": 52236,
+    "zeros_range": [
+      20,
+      23
+    ]
+  },
+  {
+    "label": "zeros_24_27",
+    "path": "sudoku_zeros_24_27.csv",
+    "rows": 100000,
+    "zeros_range": [
+      24,
+      27
+    ]
+  },
+  {
+    "label": "zeros_28_31",
+    "path": "sudoku_zeros_28_31.csv",
+    "rows": 100000,
+    "zeros_range": [
+      28,
+      31
+    ]
+  },
+  {
+    "label": "zeros_32_35",
+    "path": "sudoku_zeros_32_35.csv",
+    "rows": 100000,
+    "zeros_range": [
+      32,
+      35
+    ]
+  },
+  {
+    "label": "zeros_36_39",
+    "path": "sudoku_zeros_36_39.csv",
+    "rows": 100000,
+    "zeros_range": [
+      36,
+      39
+    ]
+  },
+  {
+    "label": "zeros_40_43",
+    "path": "sudoku_zeros_40_43.csv",
+    "rows": 100000,
+    "zeros_range": [
+      40,
+      43
+    ]
+  },
+  {
+    "label": "zeros_44_47",
+    "path": "sudoku_zeros_44_47.csv",
+    "rows": 100000,
+    "zeros_range": [
+      44,
+      47
+    ]
+  },
+  {
+    "label": "zeros_48_51",
+    "path": "sudoku_zeros_48_51.csv",
+    "rows": 100000,
+    "zeros_range": [
+      48,
+      51
+    ]
+  },
+  {
+    "label": "zeros_52_55",
+    "path": "sudoku_zeros_52_55.csv",
+    "rows": 100000,
+    "zeros_range": [
+      52,
+      55
+    ]
+  },
+  {
+    "label": "zeros_56_59",
+    "path": "sudoku_zeros_56_59.csv",
+    "rows": 1497,
+    "zeros_range": [
+      56,
+      59
+    ]
+  },
+  {
+    "label": "zeros_60_63",
+    "path": "sudoku_zeros_60_63.csv",
+    "rows": 0,
+    "zeros_range": [
+      60,
+      63
+    ]
+  }
+]

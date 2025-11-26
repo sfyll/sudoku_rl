@@ -120,8 +120,8 @@ class TensorboardLogger:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--device", default="cpu")
-    parser.add_argument("--total_steps", type=int, default=200_000)
+    parser.add_argument("--device", default="auto", help="Device string (cpu, cuda, cuda:1, mps, or auto)")
+    parser.add_argument("--total_steps", type=int, default=5_000_000)
     parser.add_argument("--num_envs", type=int, default=128)
     parser.add_argument("--bptt_horizon", type=int, default=32)
     parser.add_argument("--minibatch_size", type=int, default=256)
@@ -149,7 +149,17 @@ def main():
         cfg = pufferl.load_config("puffer_breakout")  # good baseline hyperparams
     finally:
         sys.argv = original_argv
-    cfg["train"]["device"] = args.device          # e.g. "cpu" or "mps"
+    if args.device == "auto":
+        if torch.cuda.is_available():
+            resolved_device = "cuda"
+        elif torch.backends.mps.is_available():
+            resolved_device = "mps"
+        else:
+            resolved_device = "cpu"
+    else:
+        resolved_device = args.device
+
+    cfg["train"]["device"] = resolved_device          # e.g. "cpu", "cuda", "cuda:1", "mps"
     cfg["train"]["total_timesteps"] = args.total_steps
     cfg["vec"]["num_envs"] = args.num_envs
     cfg["train"]["bptt_horizon"] = args.bptt_horizon
@@ -170,6 +180,9 @@ def main():
     cfg["train"]["gamma"] = 0.995
     cfg["train"]["vf_coef"] = 0.8
     cfg["train"]["clip_coef"] = 0.2
+    cfg["train"]["compile"] = True
+    # Allow graph breaks (e.g., numpy-based action masks); fullgraph would fail on them.
+    cfg["train"]["compile_fullgraph"] = False
 
     # Optional recording: PuffeRL uses base-level flags for frame saving
     cfg["base"]["save_frames"] = args.record_frames
