@@ -7,6 +7,7 @@ import gymnasium
 
 from .env import SudokuEnv
 from .puzzle import sample_puzzle
+from .curriculum import EpisodeSummary
 
 
 class SudokuPufferEnv(pufferlib.PufferEnv):
@@ -45,9 +46,14 @@ class SudokuPufferEnv(pufferlib.PufferEnv):
         self._seed = seed
         self.max_steps = max_steps
         self.prev_mix_ratio = prev_mix_ratio
+        self.current_bin_label = bin_label
+        self.current_bucket_id = bin_label or "default"
+        self.current_bucket_index = 0
+        self.curriculum_stage = 0
+        self.last_summary: EpisodeSummary | None = None
         if initial_board is None:
             board, solution = sample_puzzle(
-                bin_label=bin_label,
+                bin_label=self.current_bin_label,
                 seed=seed,
                 return_solution=True,
                 prev_mix_ratio=prev_mix_ratio,
@@ -78,7 +84,7 @@ class SudokuPufferEnv(pufferlib.PufferEnv):
             seed = self._seed
 
         board, solution = sample_puzzle(
-            bin_label=self.bin_label,
+            bin_label=self.current_bin_label or self.bin_label,
             return_solution=True,
             prev_mix_ratio=self.prev_mix_ratio,
         )
@@ -94,6 +100,7 @@ class SudokuPufferEnv(pufferlib.PufferEnv):
         self.terminals[0] = False
         self.truncations[0] = False
         self.masks[0] = True
+        self.last_summary = None
 
         infos = [{}]  # one dict per agent
         return self.observations, infos
@@ -125,6 +132,13 @@ class SudokuPufferEnv(pufferlib.PufferEnv):
             entropy_delta_sum = self.env.total_entropy_delta
             wrong_digit_rate = self.env.wrong_digit_count / max(1, steps_in_episode)
 
+            self.last_summary = EpisodeSummary(
+                solved=bool(info.get("solved")),
+                clean_solve=bool(info.get("solved")) and self.env.wrong_digit_count == 0,
+                total_return=float(total_return),
+                length=int(steps_in_episode),
+            )
+
             self.return_min_seen = total_return if self.return_min_seen is None else min(self.return_min_seen, total_return)
             self.return_max_seen = total_return if self.return_max_seen is None else max(self.return_max_seen, total_return)
 
@@ -142,6 +156,7 @@ class SudokuPufferEnv(pufferlib.PufferEnv):
                     "env/wrong_digit_rate": float(wrong_digit_rate),
                     "env/start_entropy_mean": float(start_entropy),
                     "env/avg_entropy_delta_per_episode": float(entropy_delta_sum / max(1, steps_in_episode)),
+                    "curriculum/max_unlocked_index": float(self.curriculum_stage),
                 }
             ]
 
@@ -235,6 +250,14 @@ class SudokuPufferEnv(pufferlib.PufferEnv):
     @property
     def done(self):
         return self._done
+
+    # ---- Curriculum helpers ----
+    def set_curriculum_bucket(self, *, bucket_id: str, bin_label: str, bucket_index: int, stage: int):
+        """Called by the trainer-side curriculum hook before reset."""
+        self.current_bucket_id = bucket_id
+        self.current_bin_label = bin_label
+        self.current_bucket_index = bucket_index
+        self.curriculum_stage = stage
 
 
 if __name__ == "__main__":

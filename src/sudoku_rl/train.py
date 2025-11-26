@@ -35,8 +35,58 @@ from .make_vecenv import make_sudoku_vecenv
 from .sudoku_mlp import SudokuMLP
 from .env_puffer import SudokuPufferEnv
 from .puzzle import supported_bins
+from .curriculum import CurriculumManager, build_default_buckets
 
 import imageio
+
+
+def _attach_curriculum(vecenv, curriculum: CurriculumManager):
+    """Patch vecenv so curriculum controls bucket selection per episode.
+
+    Notes:
+    - Requires Serial backend (env objects live in the main process).
+    - Stats are updated just before the env is reset inside vecenv.send.
+    """
+
+    if not hasattr(vecenv, "envs"):
+        raise RuntimeError("Curriculum requires Serial backend so env instances are accessible")
+
+    orig_async_reset = vecenv.async_reset
+    orig_send = vecenv.send
+
+    def _seed_envs_with_buckets():
+        for env in vecenv.envs:
+            idx = curriculum.choose_bucket()
+            bucket = curriculum.bucket_defs[idx]
+            env.set_curriculum_bucket(
+                bucket_id=bucket.id,
+                bin_label=bucket.bin_label,
+                bucket_index=idx,
+                stage=curriculum.max_unlocked_index,
+            )
+
+    def async_reset_with_curriculum(seed=None):
+        _seed_envs_with_buckets()
+        return orig_async_reset(seed)
+
+    def send_with_curriculum(actions):
+        for env in vecenv.envs:
+            if env.done and env.last_summary is not None:
+                curriculum.update_after_episode(env.current_bucket_index, env.last_summary)
+                env.last_summary = None
+            if env.done:
+                idx = curriculum.choose_bucket()
+                bucket = curriculum.bucket_defs[idx]
+                env.set_curriculum_bucket(
+                    bucket_id=bucket.id,
+                    bin_label=bucket.bin_label,
+                    bucket_index=idx,
+                    stage=curriculum.max_unlocked_index,
+                )
+        return orig_send(actions)
+
+    vecenv.async_reset = async_reset_with_curriculum
+    vecenv.send = send_with_curriculum
 
 def _parse_bin(label: str) -> tuple[int, int]:
     parts = label.split("_")
@@ -70,20 +120,21 @@ class TensorboardLogger:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--device", default="mps")
+    parser.add_argument("--device", default="cpu")
     parser.add_argument("--total_steps", type=int, default=200_000)
-    parser.add_argument("--num_envs", type=int, default=64)
+    parser.add_argument("--num_envs", type=int, default=128)
     parser.add_argument("--bptt_horizon", type=int, default=32)
     parser.add_argument("--minibatch_size", type=int, default=256)
-    parser.add_argument("--backend", type=str, default="mp", choices=["serial", "mp"], help="Vecenv backend")
+    parser.add_argument("--backend", type=str, default="serial", choices=["serial", "mp"], help="Vecenv backend (curriculum currently expects serial)")
     parser.add_argument("--num_workers", type=int, default=8, help="Workers for threaded/mp backends")
-    parser.add_argument("--log_every", type=int, default=500, help="Print dashboard every N global steps")
+    parser.add_argument("--log_every", type=int, default=5000, help="Print dashboard every N global steps")
     parser.add_argument("--record_frames", action="store_true", help="Enable PuffeRL frame recording/gif output")
     parser.add_argument("--terminate-wrong-digits-globally", action="store_true", help="Terminate if the agent hits a locally correct digit but globally wrong")
     parser.add_argument("--record_frames_count", type=int, default=200, help="How many frames to capture when recording")
     parser.add_argument("--record_gif_path", type=str, default="experiments/sudoku_eval.gif", help="Where to write the gif when recording")
     parser.add_argument("--record_fps", type=int, default=10, help="FPS for the recorded gif")
     parser.add_argument("--tb_logdir", type=str, default="runs/sudoku", help="TensorBoard log directory (set empty to disable)")
+    parser.add_argument("--disable-curriculum", action="store_true", help="Run without curriculum sampling (fixed easiest bin)")
     args = parser.parse_args()
 
     # Mute noisy warnings (pynvml deprecation, cuda-not-available on CPU/MPS, torch elastic redirects)
@@ -129,20 +180,20 @@ def main():
     }
     backend_cls = backend_map[args.backend]
 
-    # 2) Build bin curriculum from easiest upward (4-hole increments)
     bins = list(supported_bins())
     if not bins:
         raise RuntimeError("No sudoku bins available. Generate data with scripts/create_filtered_dataset_sudoku.py")
 
-    # First phase uses the easiest bin
-    first_bin = bins[0]
+    bucket_defs = build_default_buckets(bins)
+    hardest_bin = bucket_defs[-1].bin_label
     vecenv = make_sudoku_vecenv(
-        first_bin,
+        bucket_defs[0].bin_label,
         num_envs=args.num_envs,
-        max_steps=max_steps_for_bin(first_bin),
+        max_steps=max_steps_for_bin(hardest_bin),
         backend=backend_cls,
         num_workers=args.num_workers,
         terminate_on_wrong_digit=args.terminate_wrong_digits_globally,
+        prev_mix_ratio=0.0,
     )
 
     # Keep our Sudoku-specific policy instead of replacing it with the
@@ -154,8 +205,6 @@ def main():
     # 4) Create PuffeRL trainer (inject TensorBoard logger if requested)
     tb_logger = TensorboardLogger(args.tb_logdir) if args.tb_logdir else None
     algo = pufferl.PuffeRL(cfg["train"], vecenv, policy, logger=tb_logger)
-    base_ent_coef = cfg["train"]["ent_coef"]
-
     # Patch SPS reporting to hold the last non-zero value instead of 0 when
     # logs happen too frequently (avoids misleading dashboard zeros).
     def _patched_sps(self):
@@ -166,82 +215,43 @@ def main():
             return self._prev_sps
         self._prev_sps = raw
         return raw
+
     pufferl.PuffeRL.sps = property(_patched_sps)
 
-    def swap_vecenv(new_vecenv, seed: int = 0):
-        """Replace the vecenv while keeping policy/optimizer state."""
-        new_vecenv.async_reset(seed=seed)
-        algo.vecenv = new_vecenv
-        # Reset rollout bookkeeping so buffers align to the new env state.
-        algo.stats.clear()
-        algo.last_stats.clear()
-        algo.ep_lengths.zero_()
-        algo.ep_indices = torch.arange(algo.total_agents, device=cfg["train"]["device"], dtype=torch.int32)
-        algo.free_idx = algo.total_agents
-
-    # === Curriculum phases ===
-    log_step = args.log_every
-    ENT_WARMUP_STEPS = 5_000
-    ENT_WARMUP_MULT = 3.0
-
-    def run_phase(bin_label: str, phase_steps: int):
-        nonlocal vecenv
-        algo.stats.clear()
-        algo.last_stats.clear()
-        algo.phase_start_step = algo.global_step
-        phase_end = algo.global_step + phase_steps
-        next_log = algo.global_step + log_step
-        while algo.global_step < phase_end and algo.global_step < args.total_steps:
-            # Entropy warmup in the first few thousand steps of this phase
-            phase_elapsed = algo.global_step - algo.phase_start_step
-            #warm = ENT_WARMUP_MULT if phase_elapsed < ENT_WARMUP_STEPS else 1.0
-            #algo.config["ent_coef"] = base_ent_coef * warm
-
-            algo.evaluate()
-            algo.train()
-
-            while algo.global_step >= next_log:
-                algo.print_dashboard()
-                next_log += log_step
-        return
-
-    # Configure per-phase step budgets (user can adjust total_steps; these defaults split it roughly evenly)
-    # Default budgets: share total_steps across first 3 bins to keep runtime similar to prior setup
-    phase_bins = bins[:2]
-    default_phase_budget = args.total_steps // max(1, len(phase_bins))
-    phase_budgets = {b: default_phase_budget for b in phase_bins}
-
-    # Phase loop (up to first 3 bins by default)
-    current_bin = first_bin
-    run_phase(current_bin, phase_budgets[current_bin])
-
-    for next_bin in phase_bins[1:]:
-        vecenv.close()
-        vecenv = make_sudoku_vecenv(
-            next_bin,
-            num_envs=args.num_envs,
-            max_steps=max_steps_for_bin(next_bin),
-            backend=backend_cls,
-            num_workers=args.num_workers,
-            terminate_on_wrong_digit=args.terminate_wrong_digits_globally,
+    curriculum = None
+    if not args.disable_curriculum:
+        if backend_cls is not pufferlib.vector.Serial:
+            raise RuntimeError("Curriculum currently requires the serial backend")
+        curriculum = CurriculumManager(
+            bucket_defs,
+            initial_unlocked=2,
+            window_size=200,
+            promote_threshold=0.70,
+            demote_threshold=0.20,
+            min_episodes_for_decision=100,
+            alpha=2.0,
+            eps=0.05,
+            underperforming_weight=0.3,
         )
-        swap_vecenv(vecenv, seed=0)
-        run_phase(next_bin, phase_budgets[next_bin])
+        _attach_curriculum(vecenv, curriculum)
 
-    ## Optional eval recording once we've finished/early-stopped super-easy
-    #if args.record_frames:
-    #    record_policy_run(
-    #        policy=policy,
-    #        device=cfg["train"]["device"],
-    # legacy reference kept for context only
-    #        max_steps=DIFFICULTY_MAX_STEPS["tiny"],
-    #        frame_count=args.record_frames_count,
-    #        gif_path=args.record_gif_path,
-    #        fps=args.record_fps,
-    #    )
+    log_step = args.log_every
+    next_log = log_step
+    while algo.global_step < args.total_steps:
+        algo.evaluate()
+        algo.train()
 
-    print(f"Training finished ({', '.join(phase_bins)} phases)")
+        while algo.global_step >= next_log:
+            algo.print_dashboard()
+            if tb_logger and curriculum:
+                tb_logger.log(curriculum.metrics(), algo.global_step)
+            next_log += log_step
+
+    print("Training finished")
     if tb_logger:
+        # Emit final curriculum snapshot
+        if curriculum:
+            tb_logger.log(curriculum.metrics(), algo.global_step)
         tb_logger.close()
     vecenv.close()
 
