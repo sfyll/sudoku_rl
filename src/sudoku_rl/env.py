@@ -5,6 +5,12 @@ from typing import Tuple, Dict, Any, Optional
 
 import numpy as np
 
+try:
+    import numba as nb
+    USE_NUMBA = True
+except Exception:
+    USE_NUMBA = False
+
 
 Board = np.ndarray  # shape (9, 9), dtype int8, values in 0..9 (0 = empty)
 
@@ -372,6 +378,9 @@ def candidate_count(board: Board, row: int, col: int) -> int:
     if board[row, col] != 0:
         return 0
 
+    if USE_NUMBA:
+        return _candidate_count_nb(board, row, col)
+
     row_mask, col_mask, block_mask, block_grid = _masks_from_board(board)
     mask = row_mask[row] | col_mask[col] | block_grid[row, col]
     return 9 - int(mask.bit_count())
@@ -382,6 +391,9 @@ def board_entropy(board: Board, entropy_empty_weight: float = 0.0) -> float:
     Sum of log candidate counts across empty cells.
     Lower is better; solved boards have entropy 0.
     """
+    if USE_NUMBA:
+        return float(_board_entropy_nb(board, entropy_empty_weight))
+
     row_mask, col_mask, block_mask, block_grid = _masks_from_board(board)
     empties = board == 0
     if not np.any(empties):
@@ -423,3 +435,70 @@ def _masks_from_board(board: Board):
             block_grid[r, c] = block_mask[(r // 3) * 3 + (c // 3)]
 
     return row_mask, col_mask, block_mask, block_grid
+
+
+# ---------------- Numba-accelerated helpers ----------------
+if USE_NUMBA:
+
+    @nb.njit(cache=True)
+    def _masks_from_board_nb(board: np.ndarray):
+        row_mask = np.zeros(9, dtype=np.uint16)
+        col_mask = np.zeros(9, dtype=np.uint16)
+        block_mask = np.zeros(9, dtype=np.uint16)
+
+        for r in range(9):
+            for c in range(9):
+                v = board[r, c]
+                if v == 0:
+                    continue
+                b = np.uint16(1 << (v - 1))
+                row_mask[r] |= b
+                col_mask[c] |= b
+                block_idx = (r // 3) * 3 + (c // 3)
+                block_mask[block_idx] |= b
+
+        block_grid = np.empty((9, 9), dtype=np.uint16)
+        for r in range(9):
+            for c in range(9):
+                block_grid[r, c] = block_mask[(r // 3) * 3 + (c // 3)]
+
+        return row_mask, col_mask, block_mask, block_grid
+
+
+    @nb.njit(cache=True)
+    def _candidate_count_nb(board: np.ndarray, row: int, col: int) -> int:
+        if board[row, col] != 0:
+            return 0
+        row_mask, col_mask, block_mask, block_grid = _masks_from_board_nb(board)
+        mask = row_mask[row] | col_mask[col] | block_grid[row, col]
+        # popcount for 9 bits
+        count = 0
+        tmp = mask
+        while tmp:
+            tmp &= tmp - 1
+            count += 1
+        return 9 - count
+
+
+    @nb.njit(cache=True)
+    def _board_entropy_nb(board: np.ndarray, entropy_empty_weight: float) -> float:
+        row_mask, col_mask, block_mask, block_grid = _masks_from_board_nb(board)
+        entropy = 0.0
+        empty_found = False
+        for r in range(9):
+            for c in range(9):
+                if board[r, c] != 0:
+                    continue
+                empty_found = True
+                mask = row_mask[r] | col_mask[c] | block_grid[r, c]
+                count = 9
+                tmp = mask
+                while tmp:
+                    tmp &= tmp - 1
+                    count -= 1
+                if count == 0:
+                    return float("inf")
+                entropy += np.log(float(count)) + entropy_empty_weight
+        if not empty_found:
+            return 0.0
+        return entropy
