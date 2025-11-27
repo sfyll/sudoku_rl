@@ -155,19 +155,20 @@ class SudokuPufferEnv(pufferlib.PufferEnv):
             self.truncations[0] = False
             self.masks[0] = False
             self.rewards[0] = float(reward)
-            # Add episode-level stats to info; PufferLib will average these
-            # across steps since the last log.
-            info = info.copy()
+
+            # Episode-level aggregates (keep only the prefixed dashboard metrics
+            # to avoid duplicate keys and heavy unroll_nested_dict work).
             steps_in_episode = self.env.steps
             start_entropy = self.env.start_entropy
             total_return_raw = float(self.total_reward_raw)
             total_return_scaled = float(self.total_reward_scaled)
             entropy_delta_sum = self.env.total_entropy_delta
+            solved_flag = bool(info.get("solved"))
             wrong_digit_rate = self.env.wrong_digit_count / max(1, steps_in_episode)
 
             self.last_summary = EpisodeSummary(
-                solved=bool(info.get("solved")),
-                clean_solve=bool(info.get("solved")) and self.env.wrong_digit_count == 0,
+                solved=solved_flag,
+                clean_solve=solved_flag and self.env.wrong_digit_count == 0,
                 total_return=float(total_return_scaled),
                 total_return_raw=float(total_return_raw),
                 length=int(steps_in_episode),
@@ -183,26 +184,23 @@ class SudokuPufferEnv(pufferlib.PufferEnv):
             self.return_min_seen = total_return_scaled if self.return_min_seen is None else min(self.return_min_seen, total_return_scaled)
             self.return_max_seen = total_return_scaled if self.return_max_seen is None else max(self.return_max_seen, total_return_scaled)
 
-            # Minimal, de-duplicated dashboard metrics
             infos = [{
-                    "env/cumulative_reward": float(total_return_scaled),
-                    "env/cumulative_reward_min": float(self.return_min_seen),
-                    "env/cumulative_reward_max": float(self.return_max_seen),
-                    "env/cumulative_reward_raw": float(total_return_raw),
-                    "env/total_reward_scaled": float(total_return_scaled),
-                    "env/reward_scale": float(scale),
-                    "env/episode_length": float(steps_in_episode),
-                    "env/steps_per_empty_mean": self.env.steps / max(1, self.env.initial_empties),
-                    "env/solve_rate": 1.0 if info.get("solved") else 0.0,
-                    "env/clean_solve_rate": 1.0 if info.get("solved") and self.env.wrong_digit_count == 0 else 0.0,
-                    "env/timeout_rate": 1.0 if info.get("timeout") else 0.0,
-                    "env/illegal_rate": 1.0 if info.get("illegal") else 0.0,
-                    "env/wrong_digit_rate": float(wrong_digit_rate),
-                    "env/start_entropy_mean": float(start_entropy),
-                    "env/avg_entropy_delta_per_episode": float(entropy_delta_sum / max(1, steps_in_episode)),
-                    "curriculum/max_unlocked_index": float(self.curriculum.max_unlocked_index if self.curriculum else self.curriculum_stage),
-                }
-            ]
+                "env/cumulative_reward": total_return_scaled,
+                "env/cumulative_reward_min": self.return_min_seen,
+                "env/cumulative_reward_max": self.return_max_seen,
+                "env/cumulative_reward_raw": total_return_raw,
+                "env/reward_scale": scale,
+                "env/episode_length": float(steps_in_episode),
+                "env/steps_per_empty_mean": self.env.steps / max(1, self.env.initial_empties),
+                "env/solve_rate": 1.0 if solved_flag else 0.0,
+                "env/clean_solve_rate": 1.0 if solved_flag and self.env.wrong_digit_count == 0 else 0.0,
+                "env/timeout_rate": 1.0 if info.get("timeout") else 0.0,
+                "env/illegal_rate": 1.0 if info.get("illegal") else 0.0,
+                "env/wrong_digit_rate": wrong_digit_rate,
+                "env/start_entropy_mean": float(start_entropy),
+                "env/avg_entropy_delta_per_episode": float(entropy_delta_sum / max(1, steps_in_episode)),
+                "curriculum/max_unlocked_index": float(self.curriculum.max_unlocked_index if self.curriculum else self.curriculum_stage),
+            }]
 
             # Leave observations as-is; Serial backend will call reset
             # before the next step when it sees env.done
@@ -218,7 +216,8 @@ class SudokuPufferEnv(pufferlib.PufferEnv):
         self.truncations[0] = False
         self.masks[0] = not done
 
-        infos = [info]
+        # To reduce info flattening overhead, drop per-step info; keep only episode-level stats above.
+        infos = [{}]
         return self.observations, self.rewards, self.terminals, self.truncations, infos
 
     def render(self, mode=None):
