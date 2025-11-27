@@ -141,3 +141,32 @@ def test_underperforming_bucket_downweighted():
     baseline_hard = (1 - mgr.eps) ** mgr.alpha
     weight_hard = mgr._sampling_weight(1)
     assert weight_hard < baseline_hard  # down-weight applied
+
+
+def test_age_weight_tempers_new_bucket():
+    buckets = [BucketDef("easy", "easy"), BucketDef("mid", "mid"), BucketDef("hard", "hard")]
+    mgr = CurriculumManager(
+        buckets,
+        initial_unlocked=2,
+        window_size=20,
+        alpha=2.0,
+        age_floor=0.05,
+        rng=random.Random(0),
+    )
+
+    # Bucket 0 mastered, bucket 1 mid proficiency
+    for _ in range(40):
+        mgr.update_after_episode(0, _summary(True, ret=2.0))
+    for _ in range(10):
+        mgr.update_after_episode(1, _summary(True, ret=1.0))
+        mgr.update_after_episode(1, _summary(False, clean=False, ret=-1.0))
+
+    # Manually unlock bucket 2 (simulate promotion) but with zero plays -> age factor should dominate
+    mgr._locked[2] = False
+    mgr.max_unlocked_index = 2
+
+    weight_mid = mgr._sampling_weight(1)
+    weight_hard = mgr._sampling_weight(2)
+
+    assert mgr.stats[2].n == 0  # sanity: new bucket has no episodes
+    assert weight_hard < weight_mid  # age factor tempers immediate oversampling

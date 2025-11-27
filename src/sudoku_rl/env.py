@@ -473,7 +473,7 @@ if USE_NUMBA:
         mask = row_mask[row] | col_mask[col] | block_grid[row, col]
         # popcount for 9 bits
         count = 0
-        tmp = mask
+        tmp = np.uint32(mask)
         while tmp:
             tmp &= tmp - 1
             count += 1
@@ -492,7 +492,7 @@ if USE_NUMBA:
                 empty_found = True
                 mask = row_mask[r] | col_mask[c] | block_grid[r, c]
                 count = 9
-                tmp = mask
+                tmp = np.uint32(mask)
                 while tmp:
                     tmp &= tmp - 1
                     count -= 1

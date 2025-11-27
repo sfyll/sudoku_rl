@@ -106,6 +106,7 @@ class CurriculumManager:
         alpha: float = 2.0,
         eps: float = 0.05,
         underperforming_weight: float = 0.3,
+        age_floor: float = 0.02,
         rng: random.Random | None = None,
     ) -> None:
         if initial_unlocked < 1:
@@ -122,6 +123,7 @@ class CurriculumManager:
         self.alpha = alpha
         self.eps = eps
         self.underperforming_weight = underperforming_weight
+        self.age_floor = age_floor
         self.rng = rng or random.Random()
 
         # State
@@ -142,7 +144,9 @@ class CurriculumManager:
 
     def _sampling_weight(self, idx: int) -> float:
         p = self._clamped_solve_rate(idx)
+        age = max(self.age_floor, min(1.0, self.stats[idx].n / self.window_size))
         w = (1.0 - p) ** self.alpha
+        w *= age
         if idx in self._underperforming:
             w *= self.underperforming_weight
         return w
