@@ -71,7 +71,7 @@ class TensorboardLogger:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--device", default="cuda", help="Device string (cpu, cuda, cuda:1, mps, or auto)")
-    parser.add_argument("--total_steps", type=int, default=200_000_000)
+    parser.add_argument("--total_steps", type=int, default=10_000_000)
     parser.add_argument("--num_envs", type=int, default=512)
     parser.add_argument("--bptt_horizon", type=int, default=32)
     parser.add_argument("--minibatch_size", type=int, default=4096)

@@ -79,6 +79,8 @@ class SudokuPufferEnv(pufferlib.PufferEnv):
         )
         self.bin_label = bin_label
         self._done = False
+        self.total_reward_raw = 0.0
+        self.total_reward_scaled = 0.0
         self.return_min_seen: float | None = None
         self.return_max_seen: float | None = None
 
@@ -118,6 +120,8 @@ class SudokuPufferEnv(pufferlib.PufferEnv):
         self.truncations[0] = False
         self.masks[0] = True
         self.last_summary = None
+        self.total_reward_raw = 0.0
+        self.total_reward_scaled = 0.0
 
         infos = [{}]  # one dict per agent
         return self.observations, infos
@@ -130,7 +134,11 @@ class SudokuPufferEnv(pufferlib.PufferEnv):
         atn = int(actions[0])
 
         # Delegate all Sudoku logic to our Phase 2 env
-        board, reward, done, info = self.env.step(atn)
+        board, reward_raw, done, info = self.env.step(atn)
+        scale = self.curriculum.get_scale(self.current_bucket_index) if self.curriculum is not None else 1.0
+        reward = float(reward_raw) * scale
+        self.total_reward_raw += float(reward_raw)
+        self.total_reward_scaled += float(reward)
 
         # If the episode ended, signal termination on this step and queue up
         # the next episode so the runner never stalls on a solved puzzle.
@@ -145,14 +153,16 @@ class SudokuPufferEnv(pufferlib.PufferEnv):
             info = info.copy()
             steps_in_episode = self.env.steps
             start_entropy = self.env.start_entropy
-            total_return = self.env.total_reward  # cumulative reward
+            total_return_raw = float(self.total_reward_raw)
+            total_return_scaled = float(self.total_reward_scaled)
             entropy_delta_sum = self.env.total_entropy_delta
             wrong_digit_rate = self.env.wrong_digit_count / max(1, steps_in_episode)
 
             self.last_summary = EpisodeSummary(
                 solved=bool(info.get("solved")),
                 clean_solve=bool(info.get("solved")) and self.env.wrong_digit_count == 0,
-                total_return=float(total_return),
+                total_return=float(total_return_scaled),
+                total_return_raw=float(total_return_raw),
                 length=int(steps_in_episode),
             )
 
@@ -160,14 +170,17 @@ class SudokuPufferEnv(pufferlib.PufferEnv):
             if self.curriculum is not None:
                 self.curriculum.update_after_episode(self.current_bucket_index, self.last_summary)
 
-            self.return_min_seen = total_return if self.return_min_seen is None else min(self.return_min_seen, total_return)
-            self.return_max_seen = total_return if self.return_max_seen is None else max(self.return_max_seen, total_return)
+            self.return_min_seen = total_return_scaled if self.return_min_seen is None else min(self.return_min_seen, total_return_scaled)
+            self.return_max_seen = total_return_scaled if self.return_max_seen is None else max(self.return_max_seen, total_return_scaled)
 
             # Minimal, de-duplicated dashboard metrics
             infos = [{
-                    "env/cumulative_reward": float(total_return),
+                    "env/cumulative_reward": float(total_return_scaled),
                     "env/cumulative_reward_min": float(self.return_min_seen),
                     "env/cumulative_reward_max": float(self.return_max_seen),
+                    "env/cumulative_reward_raw": float(total_return_raw),
+                    "env/total_reward_scaled": float(total_return_scaled),
+                    "env/reward_scale": float(scale),
                     "env/episode_length": float(steps_in_episode),
                     "env/steps_per_empty_mean": self.env.steps / max(1, self.env.initial_empties),
                     "env/solve_rate": 1.0 if info.get("solved") else 0.0,
