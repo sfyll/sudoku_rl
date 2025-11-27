@@ -188,11 +188,9 @@ def main():
             initial_unlocked=2,
             window_size=200,
             promote_thresholds=[0.9, 0.8, 0.6],
-            demote_threshold=0.20,
             min_episodes_for_decision=100,
             alpha=2.0,
             eps=0.05,
-            underperforming_weight=0.3,
         ),
     )
 

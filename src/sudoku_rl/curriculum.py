@@ -102,11 +102,9 @@ class CurriculumManager:
         window_size: int = 200,
         promote_threshold: float = 0.70,
         promote_thresholds: Optional[Sequence[float]] = None,
-        demote_threshold: float = 0.20,
         min_episodes_for_decision: int = 100,
         alpha: float = 2.0,
         eps: float = 0.05,
-        underperforming_weight: float = 0.3,
         age_floor: float = 0.02,
         rng: random.Random | None = None,
     ) -> None:
@@ -119,11 +117,9 @@ class CurriculumManager:
         self.window_size = window_size
         self.promote_threshold = promote_threshold
         self.promote_thresholds = list(promote_thresholds) if promote_thresholds is not None else None
-        self.demote_threshold = demote_threshold
         self.min_episodes_for_decision = min_episodes_for_decision
         self.alpha = alpha
         self.eps = eps
-        self.underperforming_weight = underperforming_weight
         self.age_floor = age_floor
         self.rng = rng or random.Random()
 
@@ -133,7 +129,6 @@ class CurriculumManager:
             self._locked[i] = False
         self.max_unlocked_index = initial_unlocked - 1
         self.stats: List[BucketStats] = [BucketStats(window_size) for _ in bucket_defs]
-        self._underperforming: set[int] = set()
         self.total_episodes = 0
 
     # --- Sampling ---
@@ -145,11 +140,9 @@ class CurriculumManager:
 
     def _sampling_weight(self, idx: int) -> float:
         p = self._clamped_solve_rate(idx)
-        age = max(self.age_floor, min(1.0, self.stats[idx].n / self.window_size))
+        age = max(self.age_floor, min(1.0, (self.stats[idx].n / self.window_size) ** 0.5))
         w = (1.0 - p) ** self.alpha
         w *= age
-        if idx in self._underperforming:
-            w *= self.underperforming_weight
         return w
 
     def choose_bucket(self) -> int:
@@ -168,7 +161,6 @@ class CurriculumManager:
         self.stats[bucket_idx].add(summary)
         self.total_episodes += 1
         self._maybe_promote(bucket_idx)
-        self._maybe_flag_underperforming()
 
     def _maybe_promote(self, idx: int) -> None:
         next_idx = idx + 1
@@ -185,16 +177,6 @@ class CurriculumManager:
 
         self._locked[next_idx] = False
         self.max_unlocked_index = max(self.max_unlocked_index, next_idx)
-
-    def _maybe_flag_underperforming(self) -> None:
-        j = self.max_unlocked_index
-        stats = self.stats[j]
-        if stats.n < self.min_episodes_for_decision:
-            return
-        if stats.clean_solve_rate <= self.demote_threshold:
-            self._underperforming.add(j)
-        else:
-            self._underperforming.discard(j)
 
     def _threshold_for(self, idx: int) -> float:
         if self.promote_thresholds:

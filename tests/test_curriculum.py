@@ -125,30 +125,6 @@ def test_sampling_prefers_mid_proficiency():
     assert draws[1] > draws[0]  # prefers the mid bucket over mastered
 
 
-def test_underperforming_bucket_downweighted():
-    buckets = [BucketDef("easy", "easy"), BucketDef("hard", "hard")]
-    mgr = CurriculumManager(
-        buckets,
-        initial_unlocked=2,
-        window_size=50,
-        min_episodes_for_decision=5,
-        demote_threshold=0.2,
-        underperforming_weight=0.1,
-        rng=random.Random(1),
-    )
-
-    # Hard bucket performs poorly
-    for _ in range(5):
-        mgr.update_after_episode(1, _summary(False, clean=False, ret=-2.0))
-    # Easy bucket has good rate
-    for _ in range(5):
-        mgr.update_after_episode(0, _summary(True, ret=2.0))
-
-    baseline_hard = (1 - mgr.eps) ** mgr.alpha
-    weight_hard = mgr._sampling_weight(1)
-    assert weight_hard < baseline_hard  # down-weight applied
-
-
 def test_age_weight_tempers_new_bucket():
     buckets = [BucketDef("easy", "easy"), BucketDef("mid", "mid"), BucketDef("hard", "hard")]
     mgr = CurriculumManager(
