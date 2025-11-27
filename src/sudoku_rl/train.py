@@ -79,7 +79,7 @@ def main():
     parser.add_argument("--bptt_horizon", type=int, default=32)
     parser.add_argument("--minibatch_size", type=int, default=4096)
     parser.add_argument("--backend", type=str, default="mp", choices=["serial", "mp"], help="Vecenv backend (curriculum currently expects serial)")
-    parser.add_argument("--num_workers", type=int, default=32, help="Workers for mp backend (set lower if you saturate cores)")
+    parser.add_argument("--num_workers", type=int, default=24, help="Workers for mp backend (set lower if you saturate cores)")
     parser.add_argument("--vec_batch_size", type=int, default=128, help="Vecenv batch size for MP backend (controls worker barrier)")
     parser.add_argument("--vec_zero_copy", action="store_true", default=False, help="Use zero_copy (contiguous workers, no memcpy). Default False to allow non-contiguous copies")
     parser.add_argument("--vec_overwork", action="store_true", default=False, help="Allow num_workers > physical cores (PufferLib overwork)")
