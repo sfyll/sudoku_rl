@@ -5,12 +5,6 @@ from typing import Tuple, Dict, Any, Optional
 
 import numpy as np
 
-try:
-    import numba as nb
-    USE_NUMBA = True
-except Exception:
-    USE_NUMBA = False
-
 
 Board = np.ndarray  # shape (9, 9), dtype int8, values in 0..9 (0 = empty)
 
@@ -57,8 +51,9 @@ class SudokuEnv:
         self.solution_board: Board = solution
         self.max_steps: int = max_steps
         self.steps: int = 0
+        self._recompute_masks()
         self.initial_empties: int = int(np.sum(self.board == 0))
-        self.start_entropy: float = board_entropy(self.board, self.ENTROPY_EMPTY_WEIGHT)
+        self.start_entropy: float = self._board_entropy_cached()
         self.total_reward: float = 0.0
         self.total_entropy_delta: float = 0.0
         self.wrong_digit_count: int = 0
@@ -81,8 +76,9 @@ class SudokuEnv:
         # seed kept for later compatibility, not used yet
         self.board = self.initial_board.copy()
         self.steps = 0
+        self._recompute_masks()
         self.initial_empties = int(np.sum(self.board == 0))
-        self.start_entropy = board_entropy(self.board, self.ENTROPY_EMPTY_WEIGHT)
+        self.start_entropy = self._board_entropy_cached()
         self.total_reward = 0.0
         self.total_entropy_delta = 0.0
         self.wrong_digit_count = 0
@@ -103,7 +99,7 @@ class SudokuEnv:
         solved_now = False
         entropy_delta = 0.0
 
-        entropy_before = board_entropy(self.board, self.ENTROPY_EMPTY_WEIGHT)
+        entropy_before = self._board_entropy_cached()
 
         if illegal:
             entropy_after = entropy_before
@@ -116,7 +112,8 @@ class SudokuEnv:
         else:
             # Apply legal, solution-consistent move
             self.board[row, col] = digit
-            entropy_after = board_entropy(self.board, self.ENTROPY_EMPTY_WEIGHT)
+            self._update_masks_after_move(row, col, digit)
+            entropy_after = self._board_entropy_cached()
             if np.isfinite(entropy_after):
                 entropy_delta = entropy_before - entropy_after
             else:
@@ -277,6 +274,30 @@ class SudokuEnv:
             return False
         return self._board_valid()
 
+    def _mask_cache(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Return cached masks aligned with the current board."""
+        return self._row_mask, self._col_mask, self._block_grid
+
+    def _recompute_masks(self) -> None:
+        self._row_mask, self._col_mask, self._block_mask, self._block_grid = _masks_from_board(self.board)
+
+    def _update_masks_after_move(self, row: int, col: int, digit: int) -> None:
+        """Incrementally update masks after placing a digit in an empty cell."""
+        bit = np.uint16(1 << (digit - 1))
+        self._row_mask[row] |= bit
+        self._col_mask[col] |= bit
+        block_idx = (row // 3) * 3 + (col // 3)
+        self._block_mask[block_idx] |= bit
+        block_val = self._block_mask[block_idx]
+        br = (row // 3) * 3
+        bc = (col // 3) * 3
+        for rr in range(br, br + 3):
+            for cc in range(bc, bc + 3):
+                self._block_grid[rr, cc] = block_val
+
+    def _board_entropy_cached(self) -> float:
+        return board_entropy(self.board, self.ENTROPY_EMPTY_WEIGHT, masks=self._mask_cache())
+
     def _validate_boards(self, initial_board: Board, solution_board: Board) -> Tuple[Board, Board]:
         """Validate shapes/values and ensure solution is fully specified."""
         board = np.array(initial_board, dtype=np.int8, copy=True)
@@ -370,7 +391,12 @@ def count_empties(board: Board) -> int:
     return int(np.sum(board == 0))
 
 
-def candidate_count(board: Board, row: int, col: int) -> int:
+def candidate_count(
+    board: Board,
+    row: int,
+    col: int,
+    masks: Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]] = None,
+) -> int:
     """
     Number of digits 1..9 that can legally be placed at (row, col)
     given the current board constraints. Returns 0 for already-filled cells.
@@ -378,23 +404,27 @@ def candidate_count(board: Board, row: int, col: int) -> int:
     if board[row, col] != 0:
         return 0
 
-    if USE_NUMBA:
-        return _candidate_count_nb(board, row, col)
-
-    row_mask, col_mask, block_mask, block_grid = _masks_from_board(board)
+    if masks is None:
+        row_mask, col_mask, _, block_grid = _masks_from_board(board)
+    else:
+        row_mask, col_mask, block_grid = masks
     mask = row_mask[row] | col_mask[col] | block_grid[row, col]
     return 9 - int(mask.bit_count())
 
 
-def board_entropy(board: Board, entropy_empty_weight: float = 0.0) -> float:
+def board_entropy(
+    board: Board,
+    entropy_empty_weight: float = 0.0,
+    masks: Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]] = None,
+) -> float:
     """
     Sum of log candidate counts across empty cells.
     Lower is better; solved boards have entropy 0.
     """
-    if USE_NUMBA:
-        return float(_board_entropy_nb(board, entropy_empty_weight))
-
-    row_mask, col_mask, block_mask, block_grid = _masks_from_board(board)
+    if masks is None:
+        row_mask, col_mask, block_mask, block_grid = _masks_from_board(board)
+    else:
+        row_mask, col_mask, block_grid = masks
     empties = board == 0
     if not np.any(empties):
         return 0.0
@@ -436,69 +466,3 @@ def _masks_from_board(board: Board):
 
     return row_mask, col_mask, block_mask, block_grid
 
-
-# ---------------- Numba-accelerated helpers ----------------
-if USE_NUMBA:
-
-    @nb.njit(cache=True)
-    def _masks_from_board_nb(board: np.ndarray):
-        row_mask = np.zeros(9, dtype=np.uint16)
-        col_mask = np.zeros(9, dtype=np.uint16)
-        block_mask = np.zeros(9, dtype=np.uint16)
-
-        for r in range(9):
-            for c in range(9):
-                v = board[r, c]
-                if v == 0:
-                    continue
-                b = np.uint16(1 << (v - 1))
-                row_mask[r] |= b
-                col_mask[c] |= b
-                block_idx = (r // 3) * 3 + (c // 3)
-                block_mask[block_idx] |= b
-
-        block_grid = np.empty((9, 9), dtype=np.uint16)
-        for r in range(9):
-            for c in range(9):
-                block_grid[r, c] = block_mask[(r // 3) * 3 + (c // 3)]
-
-        return row_mask, col_mask, block_mask, block_grid
-
-
-    @nb.njit(cache=True)
-    def _candidate_count_nb(board: np.ndarray, row: int, col: int) -> int:
-        if board[row, col] != 0:
-            return 0
-        row_mask, col_mask, block_mask, block_grid = _masks_from_board_nb(board)
-        mask = row_mask[row] | col_mask[col] | block_grid[row, col]
-        # popcount for 9 bits
-        count = 0
-        tmp = np.uint32(mask)
-        while tmp:
-            tmp &= tmp - 1
-            count += 1
-        return 9 - count
-
-
-    @nb.njit(cache=True)
-    def _board_entropy_nb(board: np.ndarray, entropy_empty_weight: float) -> float:
-        row_mask, col_mask, block_mask, block_grid = _masks_from_board_nb(board)
-        entropy = 0.0
-        empty_found = False
-        for r in range(9):
-            for c in range(9):
-                if board[r, c] != 0:
-                    continue
-                empty_found = True
-                mask = row_mask[r] | col_mask[c] | block_grid[r, c]
-                count = 9
-                tmp = np.uint32(mask)
-                while tmp:
-                    tmp &= tmp - 1
-                    count -= 1
-                if count == 0:
-                    return float("inf")
-                entropy += np.log(float(count)) + entropy_empty_weight
-        if not empty_found:
-            return 0.0
-        return entropy
