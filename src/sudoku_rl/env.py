@@ -60,6 +60,8 @@ class SudokuEnv:
         solution_board: Board,
         max_steps: int = 200,
         terminate_on_wrong_digit: bool = True,
+        distance_model_path: Optional[Path] = None,
+        calibrator_path: Optional[Path] = None,
     ) -> None:
         board, solution = initial_board, solution_board
 
@@ -77,8 +79,10 @@ class SudokuEnv:
 
         # Distance model + calibrator (loaded once)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.distance_model = self._load_distance_model(Path("experiments/distance_regressor.pt"), self.device)
-        self.calibrator = self._load_calibrator(Path("experiments/distance_calibrator.json"))
+        model_path = distance_model_path or Path("experiments/distance_regressor.pt")
+        calib_path = calibrator_path or Path("experiments/distance_calibrator.json")
+        self.distance_model = self._load_distance_model(model_path, self.device)
+        self.calibrator = self._load_calibrator(calib_path)
         self.current_F: float = self._predict_F(self.board)
         self.start_F: float = self.current_F
         self.total_delta_F: float = 0.0
@@ -289,13 +293,12 @@ class SudokuEnv:
 
     # ---------- Distance model helpers ----------
 
-    def _load_distance_model(self, path: Path, device) -> Optional[DistanceRegressor]:
+    def _load_distance_model(self, path: Path, device) -> DistanceRegressor:
         global _DIST_CACHE
         if _DIST_CACHE["model"] is not None and _DIST_CACHE["model_path"] == path and _DIST_CACHE["device"] == str(device):
             return _DIST_CACHE["model"]
         if not path.exists():
-            # Fallback: no model file, use None and rely on simple heuristic
-            return None
+            raise FileNotFoundError(f"Distance regressor not found at {path}")
         model = DistanceRegressor().to(device)
         state = torch.load(path, map_location=device)
         if isinstance(state, dict) and "model_state_dict" in state:
@@ -311,21 +314,13 @@ class SudokuEnv:
         if _DIST_CACHE["calibrator"] is not None and _DIST_CACHE["calib_path"] == path:
             return _DIST_CACHE["calibrator"]
         if not path.exists():
-            # Identity calibrator fallback
-            ident = IsotonicCalibrator()
-            ident.knots_x = np.array([0.0, 1.0], dtype=np.float64)
-            ident.knots_y = np.array([0.0, 1.0], dtype=np.float64)
-            _DIST_CACHE.update(calibrator=ident, calib_path=path)
-            return ident
+            raise FileNotFoundError(f"Calibrator json not found at {path}")
         data = json.loads(path.read_text())
         calib = IsotonicCalibrator.from_dict(data)
         _DIST_CACHE.update(calibrator=calib, calib_path=path)
         return calib
 
     def _predict_distance(self, board: Board) -> float:
-        if self.distance_model is None:
-            # Simple heuristic fallback: number of empties
-            return float(np.sum(board == 0))
         x = torch.as_tensor(board.reshape(1, -1), dtype=torch.float32, device=self.device) / 9.0
         with torch.no_grad():
             pred = self.distance_model(x).item()
