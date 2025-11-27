@@ -59,7 +59,7 @@ class SudokuEnv:
         initial_board: Board,
         solution_board: Board,
         max_steps: int = 200,
-        terminate_on_wrong_digit: bool = True,
+        terminate_on_wrong_digit: bool = False,
         distance_model_path: Optional[Path] = None,
         calibrator_path: Optional[Path] = None,
     ) -> None:
