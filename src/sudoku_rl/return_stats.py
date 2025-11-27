@@ -1,10 +1,14 @@
 import multiprocessing as mp
-from typing import Sequence
+
 
 class SharedReturnStatsRegistry:
     """Process-safe shared return stats for per-bucket reward scaling.
 
-    Uses Welford updates under a single lock. Scales are global across envs.
+    Previous version used ``multiprocessing.Manager`` proxies which incurred a
+    heavy IPC round-trip on every call. This version keeps the same API but
+    stores the accumulators in shared memory (``mp.Array``) and guards updates
+    with a single ``mp.Lock``. No manager process is spawned, so ``get_scale``
+    and ``update`` are just shared-memory reads/writes.
     """
 
     def __init__(
@@ -17,28 +21,27 @@ class SharedReturnStatsRegistry:
         eps: float = 1e-6,
         min_episodes_for_scale: int = 50,
     ) -> None:
-        manager = mp.Manager()
-        self._manager = manager  # keep alive in the creating process
-        self.count = manager.list([0] * num_buckets)
-        self.mean = manager.list([0.0] * num_buckets)
-        self.m2 = manager.list([0.0] * num_buckets)
-        self.lock = manager.Lock()
+        # Shared memory buffers (no manager proxies)
+        # 'q' -> signed long long for counts, 'd' -> double for means/M2
+        self.count = mp.Array("q", [0] * num_buckets, lock=False)
+        self.mean = mp.Array("d", [0.0] * num_buckets, lock=False)
+        self.m2 = mp.Array("d", [0.0] * num_buckets, lock=False)
+
+        # Single process-shared lock to keep Welford updates atomic
+        self.lock = mp.Lock()
+
         self.target_std = target_std
         self.scale_min = scale_min
         self.scale_max = scale_max
         self.eps = eps
         self.min_episodes_for_scale = min_episodes_for_scale
 
-    def __getstate__(self):
-        state = self.__dict__.copy()
-        state.pop("_manager", None)  # manager itself isn't picklable
-        return state
-
     def update(self, bucket_idx: int, x: float) -> None:
         with self.lock:
             c = self.count[bucket_idx] + 1
-            delta = x - self.mean[bucket_idx]
-            mean_new = self.mean[bucket_idx] + delta / c
+            mean_prev = self.mean[bucket_idx]
+            delta = x - mean_prev
+            mean_new = mean_prev + delta / c
             delta2 = x - mean_new
             m2_new = self.m2[bucket_idx] + delta * delta2
 
