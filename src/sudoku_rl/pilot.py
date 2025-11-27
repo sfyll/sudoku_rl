@@ -118,7 +118,6 @@ def run_single(cfg, args, bin_label: str, terminate_on_wrong_digit: bool, run_id
     if args.backend == "mp" and args.num_envs % vec_batch_size != 0:
         vec_batch_size = math.gcd(args.num_envs, vec_batch_size) or args.num_envs
     vec_zero_copy = args.vec_zero_copy and args.backend == "mp" and args.num_envs % vec_batch_size == 0
-    vec_sync_traj = args.vec_sync_traj if args.backend == "mp" else False
     vec_overwork = args.vec_overwork if args.backend == "mp" else False
 
     steps_budget = args.total_steps
@@ -132,7 +131,6 @@ def run_single(cfg, args, bin_label: str, terminate_on_wrong_digit: bool, run_id
         backend=backend_cls,
         num_workers=args.num_workers,
         vec_batch_size=vec_batch_size,
-        vec_sync_traj=vec_sync_traj,
         vec_zero_copy=vec_zero_copy,
         vec_overwork=vec_overwork,
         terminate_on_wrong_digit=terminate_on_wrong_digit,
@@ -184,7 +182,6 @@ def main():
     parser.add_argument("--backend", choices=["serial", "mp"], default="serial")
     parser.add_argument("--num_workers", type=int, default=2)
     parser.add_argument("--vec_batch_size", type=int, default=64, help="Vecenv batch size for MP backend")
-    parser.add_argument("--vec_sync_traj", action="store_true", default=False)
     parser.add_argument("--vec_zero_copy", action="store_true", default=False)
     parser.add_argument("--vec_overwork", action="store_true", default=False)
     parser.add_argument("--log_every", type=int, default=2_000)

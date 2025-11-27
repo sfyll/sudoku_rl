@@ -17,7 +17,6 @@ def make_sudoku_vecenv(
     curriculum_kwargs=None,
     shared_return_stats=None,
     vec_batch_size: int | None = None,
-    vec_sync_traj: bool = False,
     vec_zero_copy: bool = False,
     vec_overwork: bool = False,
 ):
@@ -51,7 +50,6 @@ def make_sudoku_vecenv(
     if backend is pufferlib.vector.Multiprocessing:
         if vec_batch_size is not None:
             kwargs["batch_size"] = vec_batch_size
-        kwargs["sync_traj"] = vec_sync_traj
         kwargs["zero_copy"] = vec_zero_copy
         kwargs["overwork"] = vec_overwork
 
