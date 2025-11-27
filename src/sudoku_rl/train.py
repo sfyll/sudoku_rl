@@ -21,6 +21,7 @@ psutil.cpu_count = _safe_cpu_count
 import argparse
 import sys
 import os
+import math
 import numpy as np
 import torch
 import time
@@ -74,11 +75,15 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--device", default="cuda", help="Device string (cpu, cuda, cuda:1, mps, or auto)")
     parser.add_argument("--total_steps", type=int, default=10_000_000)
-    parser.add_argument("--num_envs", type=int, default=512)
+    parser.add_argument("--num_envs", type=int, default=1024)
     parser.add_argument("--bptt_horizon", type=int, default=32)
     parser.add_argument("--minibatch_size", type=int, default=4096)
     parser.add_argument("--backend", type=str, default="mp", choices=["serial", "mp"], help="Vecenv backend (curriculum currently expects serial)")
-    parser.add_argument("--num_workers", type=int, default=8, help="Workers for threaded/mp backends")
+    parser.add_argument("--num_workers", type=int, default=32, help="Workers for mp backend (set lower if you saturate cores)")
+    parser.add_argument("--vec_batch_size", type=int, default=128, help="Vecenv batch size for MP backend (controls worker barrier)")
+    parser.add_argument("--vec_sync_traj", action="store_true", default=False, help="Keep sync_traj on (contiguous workers). Default False for more async")
+    parser.add_argument("--vec_zero_copy", action="store_true", default=False, help="Use zero_copy (contiguous workers, no memcpy). Default False to allow non-contiguous copies")
+    parser.add_argument("--vec_overwork", action="store_true", default=False, help="Allow num_workers > physical cores (PufferLib overwork)")
     parser.add_argument("--log_every", type=int, default=5000, help="Print dashboard every N global steps")
     parser.add_argument("--record_frames", action="store_true", help="Enable PuffeRL frame recording/gif output")
     parser.add_argument("--terminate-wrong-digits-globally", action="store_true", help="Terminate if the agent hits a locally correct digit but globally wrong")
@@ -144,6 +149,15 @@ def main():
     }
     backend_cls = backend_map[args.backend]
 
+    # Tune vecenv batching to reduce recv barrier in MP backend
+    vec_batch_size = min(args.vec_batch_size, args.num_envs)
+    if args.backend == "mp" and args.num_envs % vec_batch_size != 0:
+        # Ensure divisibility; fallback to greatest common divisor to avoid zero_copy assertions
+        vec_batch_size = math.gcd(args.num_envs, vec_batch_size) or args.num_envs
+    vec_zero_copy = args.vec_zero_copy and (args.backend == "mp") and (args.num_envs % vec_batch_size == 0)
+    vec_sync_traj = args.vec_sync_traj if args.backend == "mp" else False
+    vec_overwork = args.vec_overwork if args.backend == "mp" else False
+
     bins = list(supported_bins())
     if not bins:
         raise RuntimeError("No sudoku bins available. Generate data with scripts/create_filtered_dataset_sudoku.py")
@@ -165,6 +179,10 @@ def main():
         max_steps=max_steps_for_bin(hardest_bin),
         backend=backend_cls,
         num_workers=args.num_workers,
+        vec_batch_size=vec_batch_size,
+        vec_sync_traj=vec_sync_traj,
+        vec_zero_copy=vec_zero_copy,
+        vec_overwork=vec_overwork,
         terminate_on_wrong_digit=args.terminate_wrong_digits_globally,
         prev_mix_ratio=0.0,
         bucket_defs=bucket_defs,
