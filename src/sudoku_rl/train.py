@@ -124,7 +124,7 @@ def main():
     cfg["train"]["env"] = "sudoku"
     
     # PPO CONFIG
-    cfg["train"]["learning_rate"] = 1e-3 # reduce to something smaller
+    cfg["train"]["learning_rate"] = 3e-3 # reduce to something smaller
     cfg["train"]["gae_lambda"] = 0.95 #bias-variance tradeoff. 0.95 given long-horizon problem
     cfg["train"]["update_epochs"] = 4 # update more aggressively per batch
     cfg["train"]["ent_coef"] = 0.0003 #more exploratory
