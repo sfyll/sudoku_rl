@@ -54,7 +54,8 @@ class SudokuPufferEnv(pufferlib.PufferEnv):
         self.current_bucket_index = 0
         self.curriculum_stage = 0
         self.last_summary: EpisodeSummary | None = None
-        self.shared_return_stats = shared_return_stats
+        # Distance shaping uses global scale; drop per-bin variance scaling
+        self.shared_return_stats = None
         self.episode_scale = 1.0
         # Curriculum (per-env) setup
         if bucket_defs is not None:
@@ -126,9 +127,7 @@ class SudokuPufferEnv(pufferlib.PufferEnv):
         self.total_reward_raw = 0.0
         self.total_reward_scaled = 0.0
         # Cache the scale for this episode to avoid per-step IPC
-        self.episode_scale = (
-            self.shared_return_stats.get_scale(bucket_idx) if self.shared_return_stats is not None else 1.0
-        )
+        self.episode_scale = 1.0
 
         infos = [{}]  # one dict per agent
         return self.observations, infos
@@ -143,7 +142,7 @@ class SudokuPufferEnv(pufferlib.PufferEnv):
         # Delegate all Sudoku logic to our Phase 2 env
         board, reward_raw, done, info = self.env.step(atn)
         scale = self.episode_scale
-        reward = float(reward_raw) * scale
+        reward = float(reward_raw) * scale  # scale currently 1.0
         self.total_reward_raw += float(reward_raw)
         self.total_reward_scaled += float(reward)
 
@@ -159,10 +158,10 @@ class SudokuPufferEnv(pufferlib.PufferEnv):
             # Episode-level aggregates (keep only the prefixed dashboard metrics
             # to avoid duplicate keys and heavy unroll_nested_dict work).
             steps_in_episode = self.env.steps
-            start_entropy = self.env.start_entropy
+            start_F = self.env.start_F
             total_return_raw = float(self.total_reward_raw)
             total_return_scaled = float(self.total_reward_scaled)
-            entropy_delta_sum = self.env.total_entropy_delta
+            delta_F_sum = self.env.total_delta_F
             solved_flag = bool(info.get("solved"))
             wrong_digit_rate = self.env.wrong_digit_count / max(1, steps_in_episode)
 
@@ -177,10 +176,6 @@ class SudokuPufferEnv(pufferlib.PufferEnv):
             # Update per-env curriculum
             if self.curriculum is not None:
                 self.curriculum.update_after_episode(self.current_bucket_index, self.last_summary)
-            # Update global return stats once per episode
-            if self.shared_return_stats is not None:
-                self.shared_return_stats.update(self.current_bucket_index, total_return_raw)
-
             self.return_min_seen = total_return_scaled if self.return_min_seen is None else min(self.return_min_seen, total_return_scaled)
             self.return_max_seen = total_return_scaled if self.return_max_seen is None else max(self.return_max_seen, total_return_scaled)
 
@@ -197,8 +192,8 @@ class SudokuPufferEnv(pufferlib.PufferEnv):
                 "env/timeout_rate": 1.0 if info.get("timeout") else 0.0,
                 "env/illegal_rate": 1.0 if info.get("illegal") else 0.0,
                 "env/wrong_digit_rate": wrong_digit_rate,
-                "env/start_entropy_mean": float(start_entropy),
-                "env/avg_entropy_delta_per_episode": float(entropy_delta_sum / max(1, steps_in_episode)),
+                "env/start_F_mean": float(start_F),
+                "env/avg_delta_F_per_episode": float(delta_F_sum / max(1, steps_in_episode)),
                 "curriculum/max_unlocked_index": float(self.curriculum.max_unlocked_index if self.curriculum else self.curriculum_stage),
             }]
 

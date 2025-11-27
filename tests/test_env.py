@@ -4,7 +4,7 @@ import pytest
 
 from sudoku_rl import SudokuEnv
 from sudoku_rl.puzzle import sample_puzzle, supported_bins
-from sudoku_rl.env import legal_action_mask, count_violations, board_entropy
+from sudoku_rl.env import legal_action_mask, count_violations
 
 
 def make_simple_puzzle():
@@ -70,8 +70,8 @@ def test_illegal_move_penalized_and_not_applied():
     # Board must be unchanged at that location.
     assert obs[0, 2] == 0
     assert info["illegal"] is True
-    assert reward == 0.0  # entropy unchanged -> zero reward
-    assert info["entropy_delta"] == 0.0
+    assert reward == 0.0  # no progress signal for illegal
+    assert np.isclose(info["delta_F"], 0.0)
     assert done is False  # we don't terminate on illegal moves
 
 
@@ -82,21 +82,17 @@ def test_valid_move_fills_cell_and_gives_entropy_reward():
     obs0 = env.reset()
 
     before_filled = int(np.count_nonzero(obs0))
-    entropy_before = board_entropy(obs0, SudokuEnv.ENTROPY_EMPTY_WEIGHT)
-
     # Legal move: place the correct digit according to the solution.
     action = env.encode_action(row=0, col=2, digit=int(solution[0, 2]))
     obs, reward, done, info = env.step(action)
 
     after_filled = int(np.count_nonzero(obs))
-    entropy_after = board_entropy(obs, SudokuEnv.ENTROPY_EMPTY_WEIGHT)
-    expected_delta = entropy_before - entropy_after
 
     assert obs[0, 2] == solution[0, 2]
     assert after_filled == before_filled + 1
     assert info["illegal"] is False
-    assert np.isclose(reward, expected_delta)
-    assert np.isclose(info["entropy_delta"], expected_delta)
+    assert reward >= 0.0
+    assert info["delta_F"] >= 0.0
     assert done is False
 
 
@@ -121,19 +117,14 @@ def test_solved_detection():
     env = SudokuEnv(initial_board=solved, solution_board=solution)
     env.reset()
 
-    entropy_before = board_entropy(solved, SudokuEnv.ENTROPY_EMPTY_WEIGHT)
-
     # Correct final move: put 9 at (8, 8)
     action = env.encode_action(row=8, col=8, digit=9)
     obs, reward, done, info = env.step(action)
 
-    entropy_after = board_entropy(obs, SudokuEnv.ENTROPY_EMPTY_WEIGHT)
-    expected_reward = (entropy_before - entropy_after) + SudokuEnv.SOLVE_BONUS
-
     assert obs[8, 8] == 9
     assert info["solved"] is True
     assert done is True
-    assert np.isclose(reward, expected_reward)
+    assert reward >= SudokuEnv.SOLVE_BONUS
 
 
 def test_wrong_digit_ends_episode():

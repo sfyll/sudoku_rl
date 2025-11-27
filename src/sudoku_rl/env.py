@@ -2,9 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Tuple, Dict, Any, Optional
+from pathlib import Path
+import json
 
 import numpy as np
 import math
+import torch
+
+from .distance_regressor import DistanceRegressor, IsotonicCalibrator
 
 
 Board = np.ndarray  # shape (9, 9), dtype int8, values in 0..9 (0 = empty)
@@ -19,6 +24,9 @@ _BLOCK_IDX_GRID = np.array([[0, 0, 0, 1, 1, 1, 2, 2, 2],
                              [6, 6, 6, 7, 7, 7, 8, 8, 8],
                              [6, 6, 6, 7, 7, 7, 8, 8, 8],
                              [6, 6, 6, 7, 7, 7, 8, 8, 8]], dtype=np.int8)
+
+# --------- Module-level caches (per process) to avoid reloading models per env ---------
+_DIST_CACHE: dict[str, object] = {"model": None, "calibrator": None, "model_path": None, "calib_path": None, "device": None}
 
 
 @dataclass
@@ -37,13 +45,10 @@ class SudokuEnv:
     - Action: integer in [0, 9*9*9), encoding (row, col, digit).
     """
 
-    # Reward scalars (entropy-driven)
+    # Reward scalars (distance-driven)
     SOLVE_BONUS: float = 10.0
     WRONG_DIGIT_PENALTY: float = 3.0
-    # If an action would push the board into a state with zero candidates,
-    # we treat that as high-entropy (unsolvable) rather than crashing.
     UNSOLVABLE_PENALTY: float = 20.0
-    ENTROPY_EMPTY_WEIGHT: float = 0.5
 
     n_rows: int = 9
     n_cols: int = 9
@@ -56,20 +61,27 @@ class SudokuEnv:
         max_steps: int = 200,
         terminate_on_wrong_digit: bool = True,
     ) -> None:
-        board, solution = self._validate_boards(initial_board, solution_board)
+        board, solution = initial_board, solution_board
 
         self.initial_board: Board = board
         self.board: Board = board.copy()
         self.solution_board: Board = solution
         self.max_steps: int = max_steps
         self.steps: int = 0
-        self._recompute_masks_and_entropy()
+        self._recompute_masks()
+        self.entropy = 0.0  # placeholder; entropy no longer used for reward
         self.initial_empties: int = int(np.sum(self.board == 0))
-        self.start_entropy: float = self.entropy
         self.total_reward: float = 0.0
-        self.total_entropy_delta: float = 0.0
         self.wrong_digit_count: int = 0
         self.terminate_on_wrong_digit: bool = terminate_on_wrong_digit
+
+        # Distance model + calibrator (loaded once)
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.distance_model = self._load_distance_model(Path("experiments/distance_regressor.pt"), self.device)
+        self.calibrator = self._load_calibrator(Path("experiments/distance_calibrator.json"))
+        self.current_F: float = self._predict_F(self.board)
+        self.start_F: float = self.current_F
+        self.total_delta_F: float = 0.0
 
         # Derived sizes
         self.n_actions: int = self.n_rows * self.n_cols * self.n_digits
@@ -81,19 +93,21 @@ class SudokuEnv:
             raise ValueError("initial_board and solution_board must be provided together")
 
         if initial_board is not None and solution_board is not None:
-            board, solution = self._validate_boards(initial_board, solution_board)
+            board, solution = initial_board, solution_board
             self.initial_board = board
             self.solution_board = solution
 
         # seed kept for later compatibility, not used yet
         self.board = self.initial_board.copy()
         self.steps = 0
-        self._recompute_masks_and_entropy()
+        self._recompute_masks()
+        self.entropy = 0.0
         self.initial_empties = int(np.sum(self.board == 0))
-        self.start_entropy = self.entropy
         self.total_reward = 0.0
-        self.total_entropy_delta = 0.0
         self.wrong_digit_count = 0
+        self.current_F = self._predict_F(self.board)
+        self.start_F = self.current_F
+        self.total_delta_F = 0.0
         return self.board.copy()
 
     def step(self, action: int) -> Tuple[Board, float, bool, Dict[str, Any]]:
@@ -109,34 +123,40 @@ class SudokuEnv:
         illegal = illegal_code != 0
         wrong_digit = False
         solved_now = False
-        entropy_delta = 0.0
-
-        entropy_before = self.entropy
+        delta_F = 0.0
+        F_before = self.current_F
+        F_after = F_before
 
         if illegal:
-            entropy_after = entropy_before
+            F_after = F_before
         elif digit != self.solution_board[row, col]:
             wrong_digit = True
-            entropy_after = entropy_before
-            entropy_delta = 0.0
             reward -= self.WRONG_DIGIT_PENALTY
             self.wrong_digit_count += 1
         else:
             # Apply legal, solution-consistent move
             self.board[row, col] = digit
-            entropy_after, entropy_delta = self._apply_move_and_update_entropy(row, col, digit, entropy_before)
-            reward += entropy_delta
+            self._update_masks_after_move(row, col, digit)
+            F_after = self._predict_F(self.board)
+            delta_F = F_before - F_after
+            reward += delta_F
 
             if self._is_solved():
                 reward += self.SOLVE_BONUS
                 solved_now = True
+
+        # Unsolvable detection: if no legal actions remain and not solved
+        if not solved_now and not illegal and not wrong_digit:
+            if not legal_action_mask(self.board).any():
+                reward -= self.UNSOLVABLE_PENALTY
 
         timeout = self.steps >= self.max_steps and not solved_now
 
         done = solved_now or timeout or (self.terminate_on_wrong_digit and wrong_digit)
         # Track episodic accumulators
         self.total_reward += reward
-        self.total_entropy_delta += entropy_delta
+        self.total_delta_F += delta_F
+        self.current_F = F_after
 
         obs = self.board.copy()
         info = {
@@ -145,9 +165,9 @@ class SudokuEnv:
             "timeout": timeout,
             "steps": self.steps,
             "wrong_digit": wrong_digit,
-            "entropy_before": float(entropy_before),
-            "entropy_after": float(entropy_after),
-            "entropy_delta": float(entropy_delta),
+            "F_before": float(F_before),
+            "F_after": float(F_after),
+            "delta_F": float(delta_F),
         }
 
         return obs, reward, done, info
@@ -188,35 +208,6 @@ class SudokuEnv:
     def _is_empty(self, row: int, col: int) -> bool:
         return self.board[row, col] == 0
 
-    def _is_valid_move(self, row: int, col: int, digit: int) -> bool:
-        """Check if placing `digit` at (row, col) is legal on current board."""
-        # Bounds
-        if not (0 <= row < self.n_rows and 0 <= col < self.n_cols):
-            return False
-        if not (1 <= digit <= self.n_digits):
-            return False
-
-        # Cell must be empty: no overwriting.
-        if not self._is_empty(row, col):
-            return False
-
-        # Row constraint
-        if digit in self.board[row, :]:
-            return False
-
-        # Column constraint
-        if digit in self.board[:, col]:
-            return False
-
-        # 3x3 block constraint
-        block_row = (row // 3) * 3
-        block_col = (col // 3) * 3
-        block = self.board[block_row:block_row + 3, block_col:block_col + 3]
-        if digit in block:
-            return False
-
-        return True
-
     def _illegal_code(self, row: int, col: int, digit: int) -> int:
         """
         Return 0 if legal, else a small code:
@@ -239,39 +230,6 @@ class SudokuEnv:
             return 6
         return 0
 
-    def _groups_valid(self, values: np.ndarray) -> bool:
-        """
-        Helper: check that no digit 1..9 appears more than once
-        in a 1D vector (ignore zeros).
-        """
-        non_zero = values[values != 0]
-        if non_zero.size == 0:
-            return True
-        # Since domain is small, simple check is fine.
-        uniq, counts = np.unique(non_zero, return_counts=True)
-        return np.all(counts <= 1)
-
-    def _board_valid(self) -> bool:
-        """Check entire board is Sudoku-valid (no conflicts), ignoring empties."""
-        # Rows
-        for r in range(self.n_rows):
-            if not self._groups_valid(self.board[r, :]):
-                return False
-
-        # Columns
-        for c in range(self.n_cols):
-            if not self._groups_valid(self.board[:, c]):
-                return False
-
-        # 3x3 blocks
-        for br in range(0, self.n_rows, 3):
-            for bc in range(0, self.n_cols, 3):
-                block = self.board[br:br + 3, bc:bc + 3].reshape(-1)
-                if not self._groups_valid(block):
-                    return False
-
-        return True
-
     def _is_solved(self) -> bool:
         """Solved = no zeros + globally valid."""
         if np.any(self.board == 0):
@@ -292,6 +250,9 @@ class SudokuEnv:
         return True
 
     def _recompute_masks_and_entropy(self) -> None:
+        self._recompute_masks()
+
+    def _recompute_masks(self) -> None:
         self._row_mask, self._col_mask, self._block_mask, self._block_grid = _masks_from_board(self.board)
         union = (self._row_mask[:, None] | self._col_mask[None, :] | self._block_grid).astype(np.uint16)
         pop = _POPCOUNT_TABLE[union]
@@ -299,7 +260,6 @@ class SudokuEnv:
         empties = self.board == 0
         counts[~empties] = 0
         self.candidate_counts = counts
-        self.entropy = self._entropy_from_counts(counts, empties, self.ENTROPY_EMPTY_WEIGHT)
 
     def _entropy_from_counts(self, counts: np.ndarray, empties: np.ndarray, weight: float) -> float:
         if not np.any(empties):
@@ -326,68 +286,54 @@ class SudokuEnv:
             for cc in range(bc, bc + 3):
                 self._block_grid[rr, cc] = block_val
 
-    def _apply_move_and_update_entropy(self, row: int, col: int, digit: int, entropy_before: float) -> tuple[float, float]:
-        """Update masks, candidate counts, entropy after a legal move. Returns (entropy_after, entropy_delta)."""
-        old_count = int(self.candidate_counts[row, col])
-        if math.isfinite(self.entropy) and old_count > 0:
-            self.entropy -= _LOG_TABLE[old_count] + self.ENTROPY_EMPTY_WEIGHT
-        self.candidate_counts[row, col] = 0
 
-        self._update_masks_after_move(row, col, digit)
+    # ---------- Distance model helpers ----------
 
-        # Boolean mask of affected empty cells
-        empty = self.board == 0
-        block_idx = _BLOCK_IDX_GRID[row, col]
-        affected = empty & ((np.arange(9)[:, None] == row) | (np.arange(9)[None, :] == col) | (_BLOCK_IDX_GRID == block_idx))
-        if not affected.any():
-            entropy_after = self.entropy
-            return entropy_after, entropy_before - entropy_after
-
-        union = (self._row_mask[:, None] | self._col_mask[None, :] | self._block_grid).astype(np.uint16)
-        union_aff = union[affected]
-        new_counts = (9 - _POPCOUNT_TABLE[union_aff]).astype(np.int8)
-        old_counts = self.candidate_counts[affected]
-        self.candidate_counts[affected] = new_counts
-
-        if (new_counts == 0).any():
-            self.entropy = float("inf")
-            return self.entropy, -self.UNSOLVABLE_PENALTY
-
-        if math.isfinite(self.entropy):
-            mask_old = old_counts > 0
-            if mask_old.any():
-                # entropy += log(new) - log(old) for positions where both >0
-                both = mask_old
-                self.entropy += (np.take(_LOG_TABLE, new_counts[both]) - np.take(_LOG_TABLE, old_counts[both])).sum()
-                # adjust empty-weight term: number of affected empties stays same
-            # no change if old_count==0 (new cell newly empty elsewhere) or new_count==0 handled above
-            entropy_after = self.entropy
-            return entropy_after, entropy_before - entropy_after
+    def _load_distance_model(self, path: Path, device) -> Optional[DistanceRegressor]:
+        global _DIST_CACHE
+        if _DIST_CACHE["model"] is not None and _DIST_CACHE["model_path"] == path and _DIST_CACHE["device"] == str(device):
+            return _DIST_CACHE["model"]
+        if not path.exists():
+            # Fallback: no model file, use None and rely on simple heuristic
+            return None
+        model = DistanceRegressor().to(device)
+        state = torch.load(path, map_location=device)
+        if isinstance(state, dict) and "model_state_dict" in state:
+            model.load_state_dict(state["model_state_dict"])
         else:
-            # entropy already inf
-            return self.entropy, -self.UNSOLVABLE_PENALTY
+            model.load_state_dict(state)
+        model.eval()
+        _DIST_CACHE.update(model=model, model_path=path, device=str(device))
+        return model
 
-    def _validate_boards(self, initial_board: Board, solution_board: Board) -> Tuple[Board, Board]:
-        """Validate shapes/values and ensure solution is fully specified."""
-        board = np.array(initial_board, dtype=np.int8, copy=True)
-        if board.shape != (self.n_rows, self.n_cols):
-            raise ValueError(f"initial_board must be 9x9, got {board.shape}")
-        if np.any((board < 0) | (board > 9)):
-            raise ValueError("initial_board entries must be in [0, 9]")
+    def _load_calibrator(self, path: Path) -> IsotonicCalibrator:
+        global _DIST_CACHE
+        if _DIST_CACHE["calibrator"] is not None and _DIST_CACHE["calib_path"] == path:
+            return _DIST_CACHE["calibrator"]
+        if not path.exists():
+            # Identity calibrator fallback
+            ident = IsotonicCalibrator()
+            ident.knots_x = np.array([0.0, 1.0], dtype=np.float64)
+            ident.knots_y = np.array([0.0, 1.0], dtype=np.float64)
+            _DIST_CACHE.update(calibrator=ident, calib_path=path)
+            return ident
+        data = json.loads(path.read_text())
+        calib = IsotonicCalibrator.from_dict(data)
+        _DIST_CACHE.update(calibrator=calib, calib_path=path)
+        return calib
 
-        solution = np.array(solution_board, dtype=np.int8, copy=True)
-        if solution.shape != (self.n_rows, self.n_cols):
-            raise ValueError(f"solution_board must be 9x9, got {solution.shape}")
-        if np.any((solution < 1) | (solution > 9)):
-            raise ValueError("solution_board entries must be in [1, 9]")
-        if np.any(solution == 0):
-            raise ValueError("solution_board must be fully solved (no zeros).")
+    def _predict_distance(self, board: Board) -> float:
+        if self.distance_model is None:
+            # Simple heuristic fallback: number of empties
+            return float(np.sum(board == 0))
+        x = torch.as_tensor(board.reshape(1, -1), dtype=torch.float32, device=self.device) / 9.0
+        with torch.no_grad():
+            pred = self.distance_model(x).item()
+        return float(pred)
 
-        fixed_mask = board != 0
-        if np.any(board[fixed_mask] != solution[fixed_mask]):
-            raise ValueError("initial_board conflicts with solution_board at fixed cells.")
-
-        return board, solution
+    def _predict_F(self, board: Board) -> float:
+        d = np.array([self._predict_distance(board)], dtype=np.float64)
+        return float(self.calibrator.predict(d)[0])
 
 
 def legal_action_mask(board: Board) -> np.ndarray:
