@@ -7,7 +7,13 @@ from sudoku_rl.curriculum import BucketDef, CurriculumManager, EpisodeSummary, B
 
 
 def _summary(solved: bool, clean: bool = True, ret: float = 1.0, length: int = 5) -> EpisodeSummary:
-    return EpisodeSummary(solved=solved, clean_solve=clean, total_return=ret, length=length)
+    return EpisodeSummary(
+        solved=solved,
+        clean_solve=clean,
+        total_return=ret,
+        total_return_raw=ret,
+        length=length,
+    )
 
 
 def test_bucket_stats_window_eviction():

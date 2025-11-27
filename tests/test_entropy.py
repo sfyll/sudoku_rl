@@ -1,6 +1,6 @@
 import numpy as np
 
-from sudoku_rl.env import candidate_count, board_entropy
+from sudoku_rl.env import candidate_count, board_entropy, _masks_from_board
 
 
 def test_candidate_count_empty_board_is_nine():
@@ -60,3 +60,25 @@ def test_board_entropy_zero_when_only_singleton_candidates_left():
     )
     # Only (0,8) is empty and its only legal digit is 9, so log(1) = 0.
     assert np.isclose(board_entropy(board), 0.0)
+
+
+def test_board_entropy_cached_matches_uncached():
+    board = np.array(
+        [
+            [5, 3, 0, 0, 7, 0, 0, 0, 0],
+            [6, 0, 0, 1, 9, 5, 0, 0, 0],
+            [0, 9, 8, 0, 0, 0, 0, 6, 0],
+            [8, 0, 0, 0, 6, 0, 0, 0, 3],
+            [4, 0, 0, 8, 0, 3, 0, 0, 1],
+            [7, 0, 0, 0, 2, 0, 0, 0, 6],
+            [0, 6, 0, 0, 0, 0, 2, 8, 0],
+            [0, 0, 0, 4, 1, 9, 0, 0, 5],
+            [0, 0, 0, 0, 8, 0, 0, 7, 9],
+        ],
+        dtype=np.int8,
+    )
+
+    masks = _masks_from_board(board)
+    direct = board_entropy(board, entropy_empty_weight=0.5)
+    cached = board_entropy(board, entropy_empty_weight=0.5, masks=(masks[0], masks[1], masks[3]))
+    assert np.isclose(direct, cached)

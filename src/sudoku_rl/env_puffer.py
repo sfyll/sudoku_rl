@@ -31,6 +31,7 @@ class SudokuPufferEnv(pufferlib.PufferEnv):
         prev_mix_ratio: float = 0.3,
         bucket_defs=None,
         curriculum_kwargs=None,
+        shared_return_stats=None,
     ):
         # ---- Required attributes BEFORE super().__init__ ----
         self.single_observation_space = gymnasium.spaces.Box(
@@ -53,6 +54,8 @@ class SudokuPufferEnv(pufferlib.PufferEnv):
         self.current_bucket_index = 0
         self.curriculum_stage = 0
         self.last_summary: EpisodeSummary | None = None
+        self.shared_return_stats = shared_return_stats
+        self.episode_scale = 1.0
         # Curriculum (per-env) setup
         if bucket_defs is not None:
             self.bucket_defs = bucket_defs
@@ -122,6 +125,10 @@ class SudokuPufferEnv(pufferlib.PufferEnv):
         self.last_summary = None
         self.total_reward_raw = 0.0
         self.total_reward_scaled = 0.0
+        # Cache the scale for this episode to avoid per-step IPC
+        self.episode_scale = (
+            self.shared_return_stats.get_scale(bucket_idx) if self.shared_return_stats is not None else 1.0
+        )
 
         infos = [{}]  # one dict per agent
         return self.observations, infos
@@ -135,7 +142,7 @@ class SudokuPufferEnv(pufferlib.PufferEnv):
 
         # Delegate all Sudoku logic to our Phase 2 env
         board, reward_raw, done, info = self.env.step(atn)
-        scale = self.curriculum.get_scale(self.current_bucket_index) if self.curriculum is not None else 1.0
+        scale = self.episode_scale
         reward = float(reward_raw) * scale
         self.total_reward_raw += float(reward_raw)
         self.total_reward_scaled += float(reward)
@@ -169,6 +176,9 @@ class SudokuPufferEnv(pufferlib.PufferEnv):
             # Update per-env curriculum
             if self.curriculum is not None:
                 self.curriculum.update_after_episode(self.current_bucket_index, self.last_summary)
+            # Update global return stats once per episode
+            if self.shared_return_stats is not None:
+                self.shared_return_stats.update(self.current_bucket_index, total_return_raw)
 
             self.return_min_seen = total_return_scaled if self.return_min_seen is None else min(self.return_min_seen, total_return_scaled)
             self.return_max_seen = total_return_scaled if self.return_max_seen is None else max(self.return_max_seen, total_return_scaled)

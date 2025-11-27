@@ -26,30 +26,8 @@ class EpisodeSummary:
     solved: bool
     clean_solve: bool
     total_return: float          # scaled return (fed to learner/logs)
-    total_return_raw: float      # unscaled MDP return (for scaling stats)
+    total_return_raw: float      # unscaled MDP return (for external scaling stats)
     length: int
-
-
-class ReturnStats:
-    """Online mean/std tracker (Welford) for raw episodic returns."""
-
-    def __init__(self):
-        self.count = 0
-        self.mean = 0.0
-        self.m2 = 0.0
-
-    def update(self, x: float) -> None:
-        self.count += 1
-        delta = x - self.mean
-        self.mean += delta / self.count
-        delta2 = x - self.mean
-        self.m2 += delta * delta2
-
-    @property
-    def std(self) -> float:
-        if self.count < 2:
-            return 0.0
-        return (self.m2 / (self.count - 1)) ** 0.5
 
 
 class BucketStats:
@@ -131,11 +109,6 @@ class CurriculumManager:
         underperforming_weight: float = 0.3,
         age_floor: float = 0.02,
         rng: random.Random | None = None,
-        reward_target_std: float = 10.0,
-        reward_scale_min: float = 0.1,
-        reward_scale_max: float = 10.0,
-        reward_eps: float = 1e-6,
-        min_episodes_for_scale: int = 5,
     ) -> None:
         if initial_unlocked < 1:
             raise ValueError("At least one bucket must start unlocked")
@@ -153,12 +126,6 @@ class CurriculumManager:
         self.underperforming_weight = underperforming_weight
         self.age_floor = age_floor
         self.rng = rng or random.Random()
-        # Reward scaling hyperparameters
-        self.reward_target_std = reward_target_std
-        self.reward_scale_min = reward_scale_min
-        self.reward_scale_max = reward_scale_max
-        self.reward_eps = reward_eps
-        self.min_episodes_for_scale = min_episodes_for_scale
 
         # State
         self._locked: List[bool] = [True] * len(bucket_defs)
@@ -166,7 +133,6 @@ class CurriculumManager:
             self._locked[i] = False
         self.max_unlocked_index = initial_unlocked - 1
         self.stats: List[BucketStats] = [BucketStats(window_size) for _ in bucket_defs]
-        self.return_stats: List[ReturnStats] = [ReturnStats() for _ in bucket_defs]
         self._underperforming: set[int] = set()
         self.total_episodes = 0
 
@@ -200,19 +166,9 @@ class CurriculumManager:
     # --- Updates ---
     def update_after_episode(self, bucket_idx: int, summary: EpisodeSummary) -> None:
         self.stats[bucket_idx].add(summary)
-        self.return_stats[bucket_idx].update(summary.total_return_raw)
         self.total_episodes += 1
         self._maybe_promote(bucket_idx)
         self._maybe_flag_underperforming()
-
-    # --- Reward scaling for per-bucket normalization ---
-    def get_scale(self, bucket_idx: int) -> float:
-        stats = self.return_stats[bucket_idx]
-        if stats.count < self.min_episodes_for_scale:
-            return 1.0
-        std = stats.std
-        scale = self.reward_target_std / (std + self.reward_eps)
-        return max(self.reward_scale_min, min(self.reward_scale_max, scale))
 
     def _maybe_promote(self, idx: int) -> None:
         next_idx = idx + 1
@@ -262,10 +218,6 @@ class CurriculumManager:
             prefix = f"bucket_{i}_{bucket.id}"
             out.update(stats.to_logging_dict(prefix))
             out[f"{prefix}/sampling_weight"] = self._sampling_weight(i)
-            rs = self.return_stats[i]
-            out[f"{prefix}/return_raw_mean"] = rs.mean
-            out[f"{prefix}/return_raw_std"] = rs.std
-            out[f"{prefix}/reward_scale"] = self.get_scale(i)
         return out
 
 

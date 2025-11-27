@@ -25,6 +25,7 @@ import numpy as np
 import torch
 import time
 from torch.utils.tensorboard import SummaryWriter
+import multiprocessing as mp
 
 import pufferlib.vector
 
@@ -36,6 +37,7 @@ from .sudoku_mlp import SudokuMLP
 from .env_puffer import SudokuPufferEnv
 from .puzzle import supported_bins
 from .curriculum import build_default_buckets
+from .return_stats import SharedReturnStatsRegistry
 
 import imageio
 def _parse_bin(label: str) -> tuple[int, int]:
@@ -147,6 +149,15 @@ def main():
         raise RuntimeError("No sudoku bins available. Generate data with scripts/create_filtered_dataset_sudoku.py")
 
     bucket_defs = build_default_buckets(bins)
+    # Shared return stats for per-bucket reward scaling across env workers
+    shared_return_stats = SharedReturnStatsRegistry(
+        num_buckets=len(bucket_defs),
+        target_std=5.0,
+        scale_min=0.1,
+        scale_max=10.0,
+        eps=1e-6,
+        min_episodes_for_scale=50,
+    )
     hardest_bin = bucket_defs[-1].bin_label
     vecenv = make_sudoku_vecenv(
         bucket_defs[0].bin_label,
@@ -157,6 +168,7 @@ def main():
         terminate_on_wrong_digit=args.terminate_wrong_digits_globally,
         prev_mix_ratio=0.0,
         bucket_defs=bucket_defs,
+        shared_return_stats=shared_return_stats,
         curriculum_kwargs=dict(
             initial_unlocked=2,
             window_size=200,

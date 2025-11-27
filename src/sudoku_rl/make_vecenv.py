@@ -15,6 +15,7 @@ def make_sudoku_vecenv(
     prev_mix_ratio: float = 0.3,
     bucket_defs=None,
     curriculum_kwargs=None,
+    shared_return_stats=None,
 ):
     """Create a Puffer vecenv with optional threaded/multiprocess backend."""
 
@@ -29,6 +30,8 @@ def make_sudoku_vecenv(
         env_kwargs["bucket_defs"] = bucket_defs
     if curriculum_kwargs is not None:
         env_kwargs["curriculum_kwargs"] = curriculum_kwargs
+    if shared_return_stats is not None:
+        env_kwargs["shared_return_stats"] = shared_return_stats
 
     backend = backend or pufferlib.vector.Multiprocessing
     kwargs = dict(
