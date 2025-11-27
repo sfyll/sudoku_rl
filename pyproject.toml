@@ -13,6 +13,9 @@ torch = "*"
 numpy = "*"
 tensorboard = "*"
 imageio = "^2.34.0"
+jupyter = "^1.1.1"
+matplotlib = "^3.10.7"
+seaborn = "^0.13.2"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.0.0"
