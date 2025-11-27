@@ -74,11 +74,11 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--device", default="cuda", help="Device string (cpu, cuda, cuda:1, mps, or auto)")
     parser.add_argument("--total_steps", type=int, default=10_000_000)
-    parser.add_argument("--num_envs", type=int, default=512)
+    parser.add_argument("--num_envs", type=int, default=1024)
     parser.add_argument("--bptt_horizon", type=int, default=32)
     parser.add_argument("--minibatch_size", type=int, default=4096)
     parser.add_argument("--backend", type=str, default="mp", choices=["serial", "mp"], help="Vecenv backend (curriculum currently expects serial)")
-    parser.add_argument("--num_workers", type=int, default=8, help="Workers for threaded/mp backends")
+    parser.add_argument("--num_workers", type=int, default=16, help="Workers for threaded/mp backends")
     parser.add_argument("--log_every", type=int, default=5000, help="Print dashboard every N global steps")
     parser.add_argument("--record_frames", action="store_true", help="Enable PuffeRL frame recording/gif output")
     parser.add_argument("--terminate-wrong-digits-globally", action="store_true", help="Terminate if the agent hits a locally correct digit but globally wrong")
@@ -131,7 +131,7 @@ def main():
     cfg["train"]["gamma"] = 0.995
     cfg["train"]["vf_coef"] = 0.8
     cfg["train"]["clip_coef"] = 0.2
-    cfg["train"]["compile"] = True
+    cfg["train"]["compile"] = False 
     # Allow graph breaks (e.g., numpy-based action masks); fullgraph would fail on them.
     cfg["train"]["compile_fullgraph"] = False
 
