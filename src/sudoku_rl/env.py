@@ -4,9 +4,21 @@ from dataclasses import dataclass
 from typing import Tuple, Dict, Any, Optional
 
 import numpy as np
+import math
 
 
 Board = np.ndarray  # shape (9, 9), dtype int8, values in 0..9 (0 = empty)
+_LOG_TABLE = [0.0] + [math.log(i) for i in range(1, 10)]
+_POPCOUNT_TABLE = np.array([bin(i).count("1") for i in range(512)], dtype=np.int8)
+_BLOCK_IDX_GRID = np.array([[0, 0, 0, 1, 1, 1, 2, 2, 2],
+                             [0, 0, 0, 1, 1, 1, 2, 2, 2],
+                             [0, 0, 0, 1, 1, 1, 2, 2, 2],
+                             [3, 3, 3, 4, 4, 4, 5, 5, 5],
+                             [3, 3, 3, 4, 4, 4, 5, 5, 5],
+                             [3, 3, 3, 4, 4, 4, 5, 5, 5],
+                             [6, 6, 6, 7, 7, 7, 8, 8, 8],
+                             [6, 6, 6, 7, 7, 7, 8, 8, 8],
+                             [6, 6, 6, 7, 7, 7, 8, 8, 8]], dtype=np.int8)
 
 
 @dataclass
@@ -51,9 +63,9 @@ class SudokuEnv:
         self.solution_board: Board = solution
         self.max_steps: int = max_steps
         self.steps: int = 0
-        self._recompute_masks()
+        self._recompute_masks_and_entropy()
         self.initial_empties: int = int(np.sum(self.board == 0))
-        self.start_entropy: float = self._board_entropy_cached()
+        self.start_entropy: float = self.entropy
         self.total_reward: float = 0.0
         self.total_entropy_delta: float = 0.0
         self.wrong_digit_count: int = 0
@@ -76,9 +88,9 @@ class SudokuEnv:
         # seed kept for later compatibility, not used yet
         self.board = self.initial_board.copy()
         self.steps = 0
-        self._recompute_masks()
+        self._recompute_masks_and_entropy()
         self.initial_empties = int(np.sum(self.board == 0))
-        self.start_entropy = self._board_entropy_cached()
+        self.start_entropy = self.entropy
         self.total_reward = 0.0
         self.total_entropy_delta = 0.0
         self.wrong_digit_count = 0
@@ -99,7 +111,7 @@ class SudokuEnv:
         solved_now = False
         entropy_delta = 0.0
 
-        entropy_before = self._board_entropy_cached()
+        entropy_before = self.entropy
 
         if illegal:
             entropy_after = entropy_before
@@ -112,14 +124,7 @@ class SudokuEnv:
         else:
             # Apply legal, solution-consistent move
             self.board[row, col] = digit
-            self._update_masks_after_move(row, col, digit)
-            entropy_after = self._board_entropy_cached()
-            if np.isfinite(entropy_after):
-                entropy_delta = entropy_before - entropy_after
-            else:
-                # Something made the puzzle unsatisfiable; treat as strong penalty.
-                print("Unsolvable!")
-                entropy_delta = -self.UNSOLVABLE_PENALTY
+            entropy_after, entropy_delta = self._apply_move_and_update_entropy(row, col, digit, entropy_before)
             reward += entropy_delta
 
             if self._is_solved():
@@ -224,14 +229,13 @@ class SudokuEnv:
             return 2
         if not self._is_empty(row, col):
             return 3
-        if digit in self.board[row, :]:
+        bit = 1 << (digit - 1)
+        if self._row_mask[row] & bit:
             return 4
-        if digit in self.board[:, col]:
+        if self._col_mask[col] & bit:
             return 5
-        block_row = (row // 3) * 3
-        block_col = (col // 3) * 3
-        block = self.board[block_row:block_row + 3, block_col:block_col + 3]
-        if digit in block:
+        block_idx = (row // 3) * 3 + (col // 3)
+        if self._block_mask[block_idx] & bit:
             return 6
         return 0
 
@@ -272,14 +276,41 @@ class SudokuEnv:
         """Solved = no zeros + globally valid."""
         if np.any(self.board == 0):
             return False
-        return self._board_valid()
+        # No duplicates in rows/cols/blocks if bitmasks have no overlapping bits beyond presence.
+        for r in range(9):
+            if self._row_mask[r].bit_count() != np.count_nonzero(self.board[r, :]):
+                return False
+        for c in range(9):
+            if self._col_mask[c].bit_count() != np.count_nonzero(self.board[:, c]):
+                return False
+        for b in range(9):
+            br = (b // 3) * 3
+            bc = (b % 3) * 3
+            block_vals = self.board[br:br+3, bc:bc+3]
+            if self._block_mask[b].bit_count() != np.count_nonzero(block_vals):
+                return False
+        return True
 
-    def _mask_cache(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Return cached masks aligned with the current board."""
-        return self._row_mask, self._col_mask, self._block_grid
-
-    def _recompute_masks(self) -> None:
+    def _recompute_masks_and_entropy(self) -> None:
         self._row_mask, self._col_mask, self._block_mask, self._block_grid = _masks_from_board(self.board)
+        union = (self._row_mask[:, None] | self._col_mask[None, :] | self._block_grid).astype(np.uint16)
+        pop = _POPCOUNT_TABLE[union]
+        counts = (9 - pop).astype(np.int8)
+        empties = self.board == 0
+        counts[~empties] = 0
+        self.candidate_counts = counts
+        self.entropy = self._entropy_from_counts(counts, empties, self.ENTROPY_EMPTY_WEIGHT)
+
+    def _entropy_from_counts(self, counts: np.ndarray, empties: np.ndarray, weight: float) -> float:
+        if not np.any(empties):
+            return 0.0
+        if np.any(counts[empties] == 0):
+            return float("inf")
+        return float(np.log(counts[empties].astype(np.float64)).sum() + weight * empties.sum())
+
+    def _candidate_count_fast(self, row: int, col: int) -> int:
+        union = int(self._row_mask[row] | self._col_mask[col] | self._block_grid[row, col])
+        return 9 - union.bit_count()
 
     def _update_masks_after_move(self, row: int, col: int, digit: int) -> None:
         """Incrementally update masks after placing a digit in an empty cell."""
@@ -295,8 +326,46 @@ class SudokuEnv:
             for cc in range(bc, bc + 3):
                 self._block_grid[rr, cc] = block_val
 
-    def _board_entropy_cached(self) -> float:
-        return board_entropy(self.board, self.ENTROPY_EMPTY_WEIGHT, masks=self._mask_cache())
+    def _apply_move_and_update_entropy(self, row: int, col: int, digit: int, entropy_before: float) -> tuple[float, float]:
+        """Update masks, candidate counts, entropy after a legal move. Returns (entropy_after, entropy_delta)."""
+        old_count = int(self.candidate_counts[row, col])
+        if math.isfinite(self.entropy) and old_count > 0:
+            self.entropy -= _LOG_TABLE[old_count] + self.ENTROPY_EMPTY_WEIGHT
+        self.candidate_counts[row, col] = 0
+
+        self._update_masks_after_move(row, col, digit)
+
+        # Boolean mask of affected empty cells
+        empty = self.board == 0
+        block_idx = _BLOCK_IDX_GRID[row, col]
+        affected = empty & ((np.arange(9)[:, None] == row) | (np.arange(9)[None, :] == col) | (_BLOCK_IDX_GRID == block_idx))
+        if not affected.any():
+            entropy_after = self.entropy
+            return entropy_after, entropy_before - entropy_after
+
+        union = (self._row_mask[:, None] | self._col_mask[None, :] | self._block_grid).astype(np.uint16)
+        union_aff = union[affected]
+        new_counts = (9 - _POPCOUNT_TABLE[union_aff]).astype(np.int8)
+        old_counts = self.candidate_counts[affected]
+        self.candidate_counts[affected] = new_counts
+
+        if (new_counts == 0).any():
+            self.entropy = float("inf")
+            return self.entropy, -self.UNSOLVABLE_PENALTY
+
+        if math.isfinite(self.entropy):
+            mask_old = old_counts > 0
+            if mask_old.any():
+                # entropy += log(new) - log(old) for positions where both >0
+                both = mask_old
+                self.entropy += (np.take(_LOG_TABLE, new_counts[both]) - np.take(_LOG_TABLE, old_counts[both])).sum()
+                # adjust empty-weight term: number of affected empties stays same
+            # no change if old_count==0 (new cell newly empty elsewhere) or new_count==0 handled above
+            entropy_after = self.entropy
+            return entropy_after, entropy_before - entropy_after
+        else:
+            # entropy already inf
+            return self.entropy, -self.UNSOLVABLE_PENALTY
 
     def _validate_boards(self, initial_board: Board, solution_board: Board) -> Tuple[Board, Board]:
         """Validate shapes/values and ensure solution is fully specified."""
@@ -453,16 +522,11 @@ def _masks_from_board(board: Board):
         rows, cols = np.nonzero(nonzero)
         vals = board[rows, cols]
         bits = np.left_shift(np.uint16(1), vals.astype(np.int32) - 1)
-        for r, c, b in zip(rows, cols, bits):
-            row_mask[r] |= b
-            col_mask[c] |= b
-            block_idx = (r // 3) * 3 + (c // 3)
-            block_mask[block_idx] |= b
+        np.bitwise_or.at(row_mask, rows, bits)
+        np.bitwise_or.at(col_mask, cols, bits)
+        block_indices = (rows // 3) * 3 + (cols // 3)
+        np.bitwise_or.at(block_mask, block_indices, bits)
 
-    block_grid = np.empty((9, 9), dtype=np.uint16)
-    for r in range(9):
-        for c in range(9):
-            block_grid[r, c] = block_mask[(r // 3) * 3 + (c // 3)]
+    block_grid = block_mask[_BLOCK_IDX_GRID]
 
     return row_mask, col_mask, block_mask, block_grid
-
