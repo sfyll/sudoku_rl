@@ -76,6 +76,69 @@ def max_steps_for_bin(label: str, fudge: float = 1.2) -> int:
     return int(np.ceil(empties * 9 * fudge))
 
 
+def estimate_steps_per_episode(
+    bucket_defs,
+    initial_unlocked: int,
+    *,
+    early_fraction: float = 0.7,
+) -> float:
+    """
+    Estimate average steps/episode early in training.
+
+    - Use the hardest *currently unlocked* bucket for the main term
+      (where the agent spends most time initially).
+    - Mix in a smaller contribution from the ultimate hardest bucket to avoid
+      underestimating once promotion happens.
+    """
+    if not bucket_defs:
+        return 1.0
+    unlocked_idx = max(0, min(initial_unlocked - 1, len(bucket_defs) - 1))
+    early_max = max_steps_for_bin(bucket_defs[unlocked_idx].bin_label)
+    late_max = max_steps_for_bin(bucket_defs[-1].bin_label)
+    return early_fraction * early_max + (1 - early_fraction) * late_max
+
+
+def log_curriculum_headroom(
+    *,
+    total_steps: int,
+    num_envs: int,
+    est_steps_per_episode: float,
+    min_episodes_for_decision: int,
+    initial_unlocked: int,
+    num_buckets: int,
+    target_episodes_per_env: int | None = None,
+    log_fn=print,
+) -> None:
+    """
+    Emit a quick sanity check for per-env curriculum progress.
+
+    Episodes per env is the true throttle because each env tracks its own
+    stats; promotion can't happen until one env has seen
+    `min_episodes_for_decision` episodes from a bucket.
+    """
+    if est_steps_per_episode <= 0:
+        est_steps_per_episode = 1.0
+    episodes_per_env = total_steps / (num_envs * est_steps_per_episode)
+    locked_buckets = max(0, num_buckets - initial_unlocked)
+    log_fn(
+        f"[curriculum] est_steps/ep={est_steps_per_episode:.1f}, "
+        f"episodes/env≈{episodes_per_env:.1f}, "
+        f"min_eps_for_promotion={min_episodes_for_decision}, "
+        f"initial_unlocked={initial_unlocked}, locked_buckets={locked_buckets}"
+    )
+    if target_episodes_per_env:
+        max_envs_for_target = (total_steps / (est_steps_per_episode * target_episodes_per_env))
+        log_fn(
+            f"[curriculum] To reach ~{target_episodes_per_env} episodes per env, "
+            f"use num_envs≤{max_envs_for_target:.1f} (given total_steps and est_steps/ep)."
+        )
+    if episodes_per_env < min_episodes_for_decision:
+        log_fn(
+            "[curriculum] WARNING: per-env episodes look too low to unlock the next bucket; "
+            "consider lowering min_episodes_for_decision or num_envs, or increasing total_steps."
+        )
+
+
 class TensorboardLogger:
     """Minimal logger that matches PuffeRL's expected interface."""
 
@@ -110,6 +173,8 @@ def main():
     parser.add_argument("--record_gif_path", type=str, default="experiments/sudoku_eval.gif", help="Where to write the gif when recording")
     parser.add_argument("--record_fps", type=int, default=10, help="FPS for the recorded gif")
     parser.add_argument("--tb_logdir", type=str, default="runs/sudoku", help="TensorBoard log directory (set empty to disable)")
+    parser.add_argument("--est_steps_per_episode", type=float, default=None, help="Override for curriculum headroom estimate (steps per episode)")
+    parser.add_argument("--target_episodes_per_env", type=int, default=200, help="Desired per-env episode count for curriculum sanity")
     args = parser.parse_args()
 
     # Mute noisy warnings (pynvml deprecation, cuda-not-available on CPU/MPS, torch elastic redirects)
@@ -197,6 +262,32 @@ def main():
         min_episodes_for_scale=50,
     )
     hardest_bin = bucket_defs[-1].bin_label
+    # Curriculum hyperparameters collected in one place for reuse below
+    curriculum_kwargs = dict(
+        initial_unlocked=2,
+        window_size=200,
+        promote_thresholds=[0.9, 0.8, 0.6],
+        min_episodes_for_decision=100,
+        alpha=2.0,
+        eps=0.05,
+    )
+
+    # Quick “is promotion even feasible?” check before we start.
+    default_est_steps = estimate_steps_per_episode(
+        bucket_defs, curriculum_kwargs["initial_unlocked"], early_fraction=0.7
+    )
+    est_steps_per_episode = args.est_steps_per_episode or default_est_steps
+    log_curriculum_headroom(
+        total_steps=args.total_steps,
+        num_envs=args.num_envs,
+        est_steps_per_episode=est_steps_per_episode,
+        min_episodes_for_decision=curriculum_kwargs["min_episodes_for_decision"],
+        initial_unlocked=curriculum_kwargs["initial_unlocked"],
+        num_buckets=len(bucket_defs),
+        target_episodes_per_env=args.target_episodes_per_env,
+        log_fn=print,
+    )
+
     vecenv = make_sudoku_vecenv(
         bucket_defs[0].bin_label,
         num_envs=args.num_envs,
@@ -210,14 +301,7 @@ def main():
         bucket_defs=bucket_defs,
         shared_return_stats=shared_return_stats,
         distance_state=distance_state,
-        curriculum_kwargs=dict(
-            initial_unlocked=2,
-            window_size=200,
-            promote_thresholds=[0.9, 0.8, 0.6],
-            min_episodes_for_decision=100,
-            alpha=2.0,
-            eps=0.05,
-        ),
+        curriculum_kwargs=curriculum_kwargs,
     )
 
     # Keep our Sudoku-specific policy instead of replacing it with the
@@ -252,9 +336,10 @@ def main():
             algo.print_dashboard()
             next_log += log_step
 
+    # Ensure background threads/processes are stopped and checkpoint is saved
+    algo.close()
     if tb_logger:
         tb_logger.close()
-    vecenv.close()
 
 if __name__ == "__main__":
     main()

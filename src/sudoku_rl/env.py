@@ -90,6 +90,8 @@ class SudokuEnv:
         self.current_F: float | None = None
         self.start_F: float | None = None
         self.total_delta_F: float = 0.0
+        # Reusable buffer to avoid per-step tensor allocations for distance calls
+        self._distance_buf: torch.Tensor = torch.empty((1, 81), dtype=torch.float32, device=self.device)
 
         # Derived sizes
         self.n_actions: int = self.n_rows * self.n_cols * self.n_digits
@@ -155,7 +157,8 @@ class SudokuEnv:
 
         # Unsolvable detection: if no legal actions remain and not solved
         if not solved_now and not illegal and not wrong_digit:
-            if not legal_action_mask(self.board).any():
+            # Cheap unsolvable detection without constructing full action mask
+            if not self._has_any_legal_move():
                 reward -= self.UNSOLVABLE_PENALTY
 
         timeout = self.steps >= self.max_steps and not solved_now
@@ -280,6 +283,14 @@ class SudokuEnv:
         union = int(self._row_mask[row] | self._col_mask[col] | self._block_grid[row, col])
         return 9 - union.bit_count()
 
+    def _has_any_legal_move(self) -> bool:
+        """Return True if at least one empty cell has a legal candidate."""
+        empties = np.argwhere(self.board == 0)
+        for r, c in empties:
+            if self._candidate_count_fast(int(r), int(c)) > 0:
+                return True
+        return False
+
     def _update_masks_after_move(self, row: int, col: int, digit: int) -> None:
         """Incrementally update masks after placing a digit in an empty cell."""
         bit = np.uint16(1 << (digit - 1))
@@ -331,7 +342,10 @@ class SudokuEnv:
         return calib
 
     def _predict_distance(self, board: Board) -> float:
-        x = torch.as_tensor(board.reshape(1, -1), dtype=torch.float32, device=self.device) / 9.0
+        # Avoid allocating a new tensor each call; copy into a preallocated buffer.
+        x_view = torch.as_tensor(board.reshape(1, -1), device=self.device, dtype=torch.float32)
+        self._distance_buf.copy_(x_view, non_blocking=True)
+        x = self._distance_buf / 9.0
         with torch.no_grad():
             pred = self.distance_model(x).item()
         return float(pred)
