@@ -33,6 +33,7 @@ import pufferlib.vector
 from pufferlib import pufferl  # their trainer module
 # from pufferlib import models  # their default policy module
 
+from . import puzzle as puzzle_mod
 from .make_vecenv import make_sudoku_vecenv
 from .sudoku_mlp import SudokuMLP
 from .env_puffer import SudokuPufferEnv
@@ -96,8 +97,12 @@ def main():
     # vecenv forks worker processes, so force "spawn" before any workers are
     # created to avoid the "Cannot re-initialize CUDA in forked subprocess" error.
     if args.backend == "mp":
+        # Use fork so workers inherit already-loaded puzzle pools (and other
+        # read-only state) via copy-on-write. CUDA context is not touched before
+        # forking (policy is created afterward), and the env runs its helper
+        # model on CPU, so fork is safe and faster here.
         try:
-            mp.set_start_method("spawn", force=True)
+            mp.set_start_method("fork", force=True)
         except RuntimeError:
             # Already set by another import; safe to ignore.
             pass
@@ -165,6 +170,10 @@ def main():
         vec_batch_size = math.gcd(args.num_envs, vec_batch_size) or args.num_envs
     vec_zero_copy = args.vec_zero_copy and (args.backend == "mp") and (args.num_envs % vec_batch_size == 0)
     vec_overwork = args.vec_overwork if args.backend == "mp" else False
+
+    # Preload puzzle pools once in the parent so forked workers inherit them
+    # without each reading CSVs individually.
+    puzzle_mod._load_puzzle_pools()
 
     bins = list(supported_bins())
     if not bins:
