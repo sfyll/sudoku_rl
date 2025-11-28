@@ -1,4 +1,5 @@
 # src/sudoku_rl/make_vecenv.py
+import os
 from typing import Optional
 import pufferlib.vector
 from .env_puffer import SudokuPufferEnv
