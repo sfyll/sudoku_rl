@@ -103,7 +103,7 @@ def main():
     parser.add_argument("--num_workers", type=int, default=16, help="Workers for mp backend (set lower if you saturate cores)")
     parser.add_argument("--vec_batch_size", type=int, default=256, help="Vecenv batch size for MP backend (controls worker barrier)")
     parser.add_argument("--vec_zero_copy", action="store_true", default=False, help="Use zero_copy (contiguous workers, no memcpy). Default False to allow non-contiguous copies")
-    parser.add_argument("--vec_overwork", action="store_true", default=False, help="Allow num_workers > physical cores (PufferLib overwork)"
+    parser.add_argument("--vec_overwork", action="store_true", default=False, help="Allow num_workers > physical cores (PufferLib overwork)")
     parser.add_argument("--log_every", type=int, default=50000, help="Print dashboard every N global steps")
     parser.add_argument("--record_frames", action="store_true", help="Enable PuffeRL frame recording/gif output")
     parser.add_argument("--record_frames_count", type=int, default=200, help="How many frames to capture when recording")
