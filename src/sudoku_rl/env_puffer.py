@@ -82,6 +82,7 @@ class SudokuPufferEnv(pufferlib.PufferEnv):
             initial_board=board,
             solution_board=solution,
             max_steps=max_steps,
+            distance_device="cpu",
         )
         self.bin_label = bin_label
         self._done = False

@@ -61,6 +61,7 @@ class SudokuEnv:
         max_steps: int = 200,
         distance_model_path: Optional[Path] = None,
         calibrator_path: Optional[Path] = None,
+        distance_device: str = "cpu",
     ) -> None:
         board, solution = initial_board, solution_board
 
@@ -75,8 +76,10 @@ class SudokuEnv:
         self.total_reward: float = 0.0
         self.wrong_digit_count: int = 0
 
-        # Distance model + calibrator (loaded once)
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        # Distance model + calibrator (loaded once).
+        # Always keep the helper model on CPU to avoid CUDA initialization in
+        # forked/spawned env workers (which stalls vecenv startup on GPU boxes).
+        self.device = torch.device(distance_device)
         model_path = distance_model_path or Path("experiments/distance_regressor.pt")
         calib_path = calibrator_path or Path("experiments/distance_calibrator.json")
         self.distance_model = self._load_distance_model(model_path, self.device)
