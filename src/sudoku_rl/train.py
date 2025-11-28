@@ -85,7 +85,6 @@ def main():
     parser.add_argument("--vec_overwork", action="store_true", default=False, help="Allow num_workers > physical cores (PufferLib overwork)")
     parser.add_argument("--log_every", type=int, default=50000, help="Print dashboard every N global steps")
     parser.add_argument("--record_frames", action="store_true", help="Enable PuffeRL frame recording/gif output")
-    parser.add_argument("--terminate-wrong-digits-globally", action="store_true", help="Terminate if the agent hits a locally correct digit but globally wrong")
     parser.add_argument("--record_frames_count", type=int, default=200, help="How many frames to capture when recording")
     parser.add_argument("--record_gif_path", type=str, default="experiments/sudoku_eval.gif", help="Where to write the gif when recording")
     parser.add_argument("--record_fps", type=int, default=10, help="FPS for the recorded gif")
@@ -180,7 +179,6 @@ def main():
         vec_batch_size=vec_batch_size,
         vec_zero_copy=vec_zero_copy,
         vec_overwork=vec_overwork,
-        terminate_on_wrong_digit=args.terminate_wrong_digits_globally,
         prev_mix_ratio=0.0,
         bucket_defs=bucket_defs,
         shared_return_stats=shared_return_stats,

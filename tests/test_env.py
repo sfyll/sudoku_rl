@@ -164,7 +164,7 @@ def test_wrong_digit_ends_episode():
 
 def test_wrong_digit_against_solution_is_penalized():
     board, solution = sample_puzzle(bin_label=supported_bins()[0], seed=0, return_solution=True)
-    env = SudokuEnv(initial_board=board, solution_board=solution, terminate_on_wrong_digit=False)
+    env = SudokuEnv(initial_board=board, solution_board=solution)
     env.reset()
 
     # Find an empty cell with >1 locally legal digit, pick a legal-but-wrong digit.

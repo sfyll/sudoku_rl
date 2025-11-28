@@ -59,7 +59,6 @@ class SudokuEnv:
         initial_board: Board,
         solution_board: Board,
         max_steps: int = 200,
-        terminate_on_wrong_digit: bool = False,
         distance_model_path: Optional[Path] = None,
         calibrator_path: Optional[Path] = None,
     ) -> None:
@@ -75,7 +74,6 @@ class SudokuEnv:
         self.initial_empties: int = int(np.sum(self.board == 0))
         self.total_reward: float = 0.0
         self.wrong_digit_count: int = 0
-        self.terminate_on_wrong_digit: bool = terminate_on_wrong_digit
 
         # Distance model + calibrator (loaded once)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -156,7 +154,7 @@ class SudokuEnv:
 
         timeout = self.steps >= self.max_steps and not solved_now
 
-        done = solved_now or timeout or (self.terminate_on_wrong_digit and wrong_digit)
+        done = solved_now or timeout 
         # Track episodic accumulators
         self.total_reward += reward
         self.total_delta_F += delta_F

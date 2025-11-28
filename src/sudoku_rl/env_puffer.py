@@ -27,7 +27,6 @@ class SudokuPufferEnv(pufferlib.PufferEnv):
         seed: int = 0,
         max_steps: int = 10_000,
         initial_board=None,
-        terminate_on_wrong_digit: bool = True,
         prev_mix_ratio: float = 0.3,
         bucket_defs=None,
         curriculum_kwargs=None,
@@ -62,10 +61,14 @@ class SudokuPufferEnv(pufferlib.PufferEnv):
             self.bucket_defs = bucket_defs
         else:
             self.bucket_defs = [BucketDef(id=bin_label or "default", bin_label=bin_label or "default")]
-        self.curriculum = CurriculumManager(
-            self.bucket_defs,
-            **(curriculum_kwargs or {}),
-        )
+        allowed_keys = {"initial_unlocked", "window_size", "promote_threshold", "promote_thresholds", "min_episodes_for_decision", "alpha", "eps", "age_floor", "rng"}
+        if curriculum_kwargs is None:
+            ck = {"initial_unlocked": 1, "window_size": 200, "min_episodes_for_decision": 1, "promote_threshold": 1.0}
+        else:
+            ck = {k: v for k, v in curriculum_kwargs.items() if k in allowed_keys}
+            if len(self.bucket_defs) == 1:
+                ck["initial_unlocked"] = 1
+        self.curriculum = CurriculumManager(self.bucket_defs, **ck)
 
         # Initial puzzle
         board, solution = sample_puzzle(
@@ -79,7 +82,6 @@ class SudokuPufferEnv(pufferlib.PufferEnv):
             initial_board=board,
             solution_board=solution,
             max_steps=max_steps,
-            terminate_on_wrong_digit=terminate_on_wrong_digit,
         )
         self.bin_label = bin_label
         self._done = False

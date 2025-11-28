@@ -11,7 +11,6 @@ def make_sudoku_vecenv(
     max_steps: int | None = None,
     backend=None,
     num_workers: int | None = None,
-    terminate_on_wrong_digit: bool = True,
     prev_mix_ratio: float = 0.3,
     bucket_defs=None,
     curriculum_kwargs=None,
@@ -24,7 +23,6 @@ def make_sudoku_vecenv(
 
     env_kwargs = {
         "bin_label": bin_label,
-        "terminate_on_wrong_digit": terminate_on_wrong_digit,
         "prev_mix_ratio": prev_mix_ratio,
     }
     if max_steps is not None:
@@ -33,6 +31,14 @@ def make_sudoku_vecenv(
         env_kwargs["bucket_defs"] = bucket_defs
     if curriculum_kwargs is not None:
         env_kwargs["curriculum_kwargs"] = curriculum_kwargs
+    else:
+        # single-bin, no curriculum; keep parameters compatible with CurriculumManager signature
+        env_kwargs["curriculum_kwargs"] = {
+            "initial_unlocked": 1,
+            "window_size": 200,
+            "promote_threshold": 1.0,
+            "min_episodes_for_decision": 1,
+        }
     if shared_return_stats is not None:
         env_kwargs["shared_return_stats"] = shared_return_stats
 
