@@ -33,13 +33,13 @@ import pufferlib.vector
 from pufferlib import pufferl  # their trainer module
 # from pufferlib import models  # their default policy module
 
-from . import puzzle as puzzle_mod
 from .make_vecenv import make_sudoku_vecenv
 from .sudoku_mlp import SudokuMLP
 from .env_puffer import SudokuPufferEnv
 from .puzzle import supported_bins
 from .curriculum import build_default_buckets
 from .return_stats import SharedReturnStatsRegistry
+from pathlib import Path
 
 import imageio
 def _parse_bin(label: str) -> tuple[int, int]:
@@ -91,21 +91,6 @@ def main():
     parser.add_argument("--record_fps", type=int, default=10, help="FPS for the recorded gif")
     parser.add_argument("--tb_logdir", type=str, default="runs/sudoku", help="TensorBoard log directory (set empty to disable)")
     args = parser.parse_args()
-
-    # When using CUDA with PyTorch, the default Linux start method (fork) cannot
-    # safely re-initialize the CUDA context in child processes. PufferLib's MP
-    # vecenv forks worker processes, so force "spawn" before any workers are
-    # created to avoid the "Cannot re-initialize CUDA in forked subprocess" error.
-    if args.backend == "mp":
-        # Use fork so workers inherit already-loaded puzzle pools (and other
-        # read-only state) via copy-on-write. CUDA context is not touched before
-        # forking (policy is created afterward), and the env runs its helper
-        # model on CPU, so fork is safe and faster here.
-        try:
-            mp.set_start_method("fork", force=True)
-        except RuntimeError:
-            # Already set by another import; safe to ignore.
-            pass
 
     # Mute noisy warnings (pynvml deprecation, cuda-not-available on CPU/MPS, torch elastic redirects)
     warnings.filterwarnings("ignore", message=".*pynvml package is deprecated.*", category=FutureWarning)
@@ -171,9 +156,11 @@ def main():
     vec_zero_copy = args.vec_zero_copy and (args.backend == "mp") and (args.num_envs % vec_batch_size == 0)
     vec_overwork = args.vec_overwork if args.backend == "mp" else False
 
-    # Preload puzzle pools once in the parent so forked workers inherit them
-    # without each reading CSVs individually.
-    puzzle_mod._load_puzzle_pools()
+    # Load distance model weights once on CPU and hand the state_dict to workers
+    # to avoid each process reading from disk.
+    distance_model_path = Path("experiments/distance_regressor.pt")
+    distance_state = torch.load(distance_model_path, map_location="cpu")
+    print(f"[parent pid {os.getpid()}] loaded distance model state from {distance_model_path}")
 
     bins = list(supported_bins())
     if not bins:
@@ -202,6 +189,7 @@ def main():
         prev_mix_ratio=0.0,
         bucket_defs=bucket_defs,
         shared_return_stats=shared_return_stats,
+        distance_state=distance_state,
         curriculum_kwargs=dict(
             initial_unlocked=2,
             window_size=200,

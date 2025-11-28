@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from typing import Tuple, Dict, Any, Optional
 from pathlib import Path
 import json
+import os
+import time
 
 import numpy as np
 import math
@@ -62,6 +64,7 @@ class SudokuEnv:
         distance_model_path: Optional[Path] = None,
         calibrator_path: Optional[Path] = None,
         distance_device: str = "cpu",
+        distance_state: Optional[dict] = None,
     ) -> None:
         board, solution = initial_board, solution_board
 
@@ -82,7 +85,7 @@ class SudokuEnv:
         self.device = torch.device(distance_device)
         model_path = distance_model_path or Path("experiments/distance_regressor.pt")
         calib_path = calibrator_path or Path("experiments/distance_calibrator.json")
-        self.distance_model = self._load_distance_model(model_path, self.device)
+        self.distance_model = self._load_distance_model(model_path, self.device, distance_state)
         self.calibrator = self._load_calibrator(calib_path)
         self.current_F: float = self._predict_F(self.board)
         self.start_F: float = self.current_F
@@ -294,20 +297,27 @@ class SudokuEnv:
 
     # ---------- Distance model helpers ----------
 
-    def _load_distance_model(self, path: Path, device) -> DistanceRegressor:
+    def _load_distance_model(self, path: Path, device, state_override: Optional[dict]) -> DistanceRegressor:
         global _DIST_CACHE
         if _DIST_CACHE["model"] is not None and _DIST_CACHE["model_path"] == path and _DIST_CACHE["device"] == str(device):
             return _DIST_CACHE["model"]
-        if not path.exists():
-            raise FileNotFoundError(f"Distance regressor not found at {path}")
         model = DistanceRegressor().to(device)
-        state = torch.load(path, map_location=device)
+        t0 = time.time()
+        if state_override is not None:
+            state = state_override
+            src = "override"
+        else:
+            if not path.exists():
+                raise FileNotFoundError(f"Distance regressor not found at {path}")
+            state = torch.load(path, map_location=device)
+            src = str(path)
         if isinstance(state, dict) and "model_state_dict" in state:
             model.load_state_dict(state["model_state_dict"])
         else:
             model.load_state_dict(state)
         model.eval()
         _DIST_CACHE.update(model=model, model_path=path, device=str(device))
+        print(f"[pid {os.getpid()}] loaded distance model from {src} to {device} in {time.time()-t0:.2f}s")
         return model
 
     def _load_calibrator(self, path: Path) -> IsotonicCalibrator:

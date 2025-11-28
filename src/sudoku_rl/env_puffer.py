@@ -31,6 +31,7 @@ class SudokuPufferEnv(pufferlib.PufferEnv):
         bucket_defs=None,
         curriculum_kwargs=None,
         shared_return_stats=None,
+        distance_state=None,
     ):
         # ---- Required attributes BEFORE super().__init__ ----
         self.single_observation_space = gymnasium.spaces.Box(
@@ -83,6 +84,7 @@ class SudokuPufferEnv(pufferlib.PufferEnv):
             solution_board=solution,
             max_steps=max_steps,
             distance_device="cpu",
+            distance_state=distance_state,
         )
         self.bin_label = bin_label
         self._done = False

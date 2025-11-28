@@ -5,6 +5,9 @@ import csv
 import json
 import random
 import re
+import time
+import os
+import pickle
 from functools import lru_cache
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
@@ -17,6 +20,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = PROJECT_ROOT / "data" / "processed"
 MANIFEST_PATH = DATA_DIR / "sudoku_bins_manifest.json"
 BIN_GLOB = "sudoku_zeros_*.csv"
+PUZZLE_CACHE_PATH = DATA_DIR / "puzzle_cache.pkl"
 
 
 
@@ -118,6 +122,7 @@ def _nearest_bin_for_target(target_zeros: int) -> str:
 
 
 def _load_from_csv(path: Path, label: str) -> List[dict]:
+    t0 = time.time()
     puzzles: List[dict] = []
     with path.open(newline="") as f:
         reader = csv.DictReader(f)
@@ -140,11 +145,19 @@ def _load_from_csv(path: Path, label: str) -> List[dict]:
             puzzles.append(entry)
     if not puzzles:
         raise ValueError(f"No puzzles loaded for bin '{label}' from {path}")
+    print(f"[pid {os.getpid()}] loaded {len(puzzles)} puzzles for {label} from CSV in {time.time()-t0:.2f}s")
     return puzzles
 
 
 @lru_cache(maxsize=1)
 def _load_puzzle_pools() -> Dict[str, List[dict]]:
+    t0 = time.time()
+    if PUZZLE_CACHE_PATH.exists():
+        with PUZZLE_CACHE_PATH.open("rb") as f:
+            pools = pickle.load(f)
+        print(f"[pid {os.getpid()}] loaded puzzle cache from {PUZZLE_CACHE_PATH} in {time.time()-t0:.2f}s")
+        return pools
+
     pools: Dict[str, List[dict]] = {}
     rows = _bin_rows()
     for label, csv_path in _bin_index().items():
@@ -153,6 +166,10 @@ def _load_puzzle_pools() -> Dict[str, List[dict]]:
         if not csv_path.exists():
             raise FileNotFoundError(f"Expected CSV file not found: {csv_path}")
         pools[label] = _load_from_csv(csv_path, label)
+
+    with PUZZLE_CACHE_PATH.open("wb") as f:
+        pickle.dump(pools, f, protocol=pickle.HIGHEST_PROTOCOL)
+    print(f"[pid {os.getpid()}] built puzzle cache at {PUZZLE_CACHE_PATH} in {time.time()-t0:.2f}s")
     return pools
 
 

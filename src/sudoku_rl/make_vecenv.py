@@ -18,6 +18,7 @@ def make_sudoku_vecenv(
     vec_batch_size: int | None = None,
     vec_zero_copy: bool = False,
     vec_overwork: bool = False,
+    distance_state=None,
 ):
     """Create a Puffer vecenv with optional threaded/multiprocess backend."""
 
@@ -25,6 +26,8 @@ def make_sudoku_vecenv(
         "bin_label": bin_label,
         "prev_mix_ratio": prev_mix_ratio,
     }
+    if distance_state is not None:
+        env_kwargs["distance_state"] = distance_state
     if max_steps is not None:
         env_kwargs["max_steps"] = max_steps
     if bucket_defs is not None:
