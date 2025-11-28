@@ -91,6 +91,17 @@ def main():
     parser.add_argument("--tb_logdir", type=str, default="runs/sudoku", help="TensorBoard log directory (set empty to disable)")
     args = parser.parse_args()
 
+    # When using CUDA with PyTorch, the default Linux start method (fork) cannot
+    # safely re-initialize the CUDA context in child processes. PufferLib's MP
+    # vecenv forks worker processes, so force "spawn" before any workers are
+    # created to avoid the "Cannot re-initialize CUDA in forked subprocess" error.
+    if args.backend == "mp":
+        try:
+            mp.set_start_method("spawn", force=True)
+        except RuntimeError:
+            # Already set by another import; safe to ignore.
+            pass
+
     # Mute noisy warnings (pynvml deprecation, cuda-not-available on CPU/MPS, torch elastic redirects)
     warnings.filterwarnings("ignore", message=".*pynvml package is deprecated.*", category=FutureWarning)
     warnings.filterwarnings("ignore", message="User provided device_type of 'cuda', but CUDA is not available.*", category=UserWarning)
