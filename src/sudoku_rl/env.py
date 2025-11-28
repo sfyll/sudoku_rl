@@ -317,7 +317,7 @@ class SudokuEnv:
             model.load_state_dict(state)
         model.eval()
         _DIST_CACHE.update(model=model, model_path=path, device=str(device))
-        print(f"[pid {os.getpid()}] loaded distance model from {src} to {device} in {time.time()-t0:.2f}s")
+        print(f"[pid {os.getpid()}] loaded distance model from {src} to {device} in {time.time()-t0:.2f}s", flush=True)
         return model
 
     def _load_calibrator(self, path: Path) -> IsotonicCalibrator:

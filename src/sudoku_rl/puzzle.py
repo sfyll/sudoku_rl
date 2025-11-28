@@ -145,7 +145,7 @@ def _load_from_csv(path: Path, label: str) -> List[dict]:
             puzzles.append(entry)
     if not puzzles:
         raise ValueError(f"No puzzles loaded for bin '{label}' from {path}")
-    print(f"[pid {os.getpid()}] loaded {len(puzzles)} puzzles for {label} from CSV in {time.time()-t0:.2f}s")
+    print(f"[pid {os.getpid()}] loaded {len(puzzles)} puzzles for {label} from CSV in {time.time()-t0:.2f}s", flush=True)
     return puzzles
 
 
@@ -155,7 +155,7 @@ def _load_puzzle_pools() -> Dict[str, List[dict]]:
     if PUZZLE_CACHE_PATH.exists():
         with PUZZLE_CACHE_PATH.open("rb") as f:
             pools = pickle.load(f)
-        print(f"[pid {os.getpid()}] loaded puzzle cache from {PUZZLE_CACHE_PATH} in {time.time()-t0:.2f}s")
+        print(f"[pid {os.getpid()}] loaded puzzle cache from {PUZZLE_CACHE_PATH} in {time.time()-t0:.2f}s", flush=True)
         return pools
 
     pools: Dict[str, List[dict]] = {}
@@ -169,7 +169,7 @@ def _load_puzzle_pools() -> Dict[str, List[dict]]:
 
     with PUZZLE_CACHE_PATH.open("wb") as f:
         pickle.dump(pools, f, protocol=pickle.HIGHEST_PROTOCOL)
-    print(f"[pid {os.getpid()}] built puzzle cache at {PUZZLE_CACHE_PATH} in {time.time()-t0:.2f}s")
+    print(f"[pid {os.getpid()}] built puzzle cache at {PUZZLE_CACHE_PATH} in {time.time()-t0:.2f}s", flush=True)
     return pools
 
 

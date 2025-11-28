@@ -160,7 +160,7 @@ def main():
     # to avoid each process reading from disk.
     distance_model_path = Path("experiments/distance_regressor.pt")
     distance_state = torch.load(distance_model_path, map_location="cpu")
-    print(f"[parent pid {os.getpid()}] loaded distance model state from {distance_model_path}")
+    print(f"[parent pid {os.getpid()}] loaded distance model state from {distance_model_path}", flush=True)
 
     bins = list(supported_bins())
     if not bins:
@@ -177,6 +177,7 @@ def main():
         min_episodes_for_scale=50,
     )
     hardest_bin = bucket_defs[-1].bin_label
+    print(f"[parent pid {os.getpid()}] creating vecenv...", flush=True)
     vecenv = make_sudoku_vecenv(
         bucket_defs[0].bin_label,
         num_envs=args.num_envs,
@@ -199,6 +200,7 @@ def main():
             eps=0.05,
         ),
     )
+    print(f"[parent pid {os.getpid()}] vecenv created", flush=True)
 
     # Keep our Sudoku-specific policy instead of replacing it with the
     # default Breakout policy referenced by the PuffeRL config. We still
@@ -208,7 +210,9 @@ def main():
 
     # 4) Create PuffeRL trainer (inject TensorBoard logger if requested)
     tb_logger = TensorboardLogger(args.tb_logdir) if args.tb_logdir else None
+    print(f"[parent pid {os.getpid()}] building PuffeRL trainer", flush=True)
     algo = pufferl.PuffeRL(cfg["train"], vecenv, policy, logger=tb_logger)
+    print(f"[parent pid {os.getpid()}] trainer created", flush=True)
     # Patch SPS reporting to hold the last non-zero value instead of 0 when
     # logs happen too frequently (avoids misleading dashboard zeros).
     def _patched_sps(self):

@@ -46,6 +46,7 @@ def make_sudoku_vecenv(
         env_kwargs["shared_return_stats"] = shared_return_stats
 
     backend = backend or pufferlib.vector.Multiprocessing
+    print(f"[pid {os.getpid()}] make_sudoku_vecenv backend={backend.__name__ if hasattr(backend,'__name__') else backend} num_envs={num_envs} num_workers={num_workers}", flush=True)
     kwargs = dict(
         backend=backend,
         num_envs=num_envs,

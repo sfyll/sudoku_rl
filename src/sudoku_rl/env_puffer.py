@@ -1,5 +1,7 @@
 from __future__ import annotations
 from typing import Counter
+import time
+import os
 
 import numpy as np
 import pufferlib
@@ -34,6 +36,7 @@ class SudokuPufferEnv(pufferlib.PufferEnv):
         distance_state=None,
     ):
         # ---- Required attributes BEFORE super().__init__ ----
+        print(f"[pid {os.getpid()}] SudokuPufferEnv.__init__ bin={bin_label} seed={seed}", flush=True)
         self.single_observation_space = gymnasium.spaces.Box(
             low=0,
             high=9,
@@ -78,6 +81,7 @@ class SudokuPufferEnv(pufferlib.PufferEnv):
             return_solution=True,
             prev_mix_ratio=prev_mix_ratio,
         )
+        print(f"[pid {os.getpid()}] initial sample_puzzle done", flush=True)
 
         self.env = SudokuEnv(
             initial_board=board,
@@ -99,6 +103,7 @@ class SudokuPufferEnv(pufferlib.PufferEnv):
     # ---- Required API: reset/step/render/close ----
     def reset(self, seed: int | None = None):
         """Reset SudokuEnv and write into Puffer buffers."""
+        t0 = time.time()
         if seed is None:
             seed = self._seed
 
@@ -116,6 +121,7 @@ class SudokuPufferEnv(pufferlib.PufferEnv):
             return_solution=True,
             prev_mix_ratio=self.prev_mix_ratio,
         )
+        print(f"[pid {os.getpid()}] reset sample_puzzle done in {time.time()-t0:.2f}s", flush=True)
 
         board = self.env.reset(seed=seed, initial_board=board, solution_board=solution)
         self._done = False
