@@ -87,8 +87,8 @@ class SudokuEnv:
         calib_path = calibrator_path or Path("experiments/distance_calibrator.json")
         self.distance_model = self._load_distance_model(model_path, self.device, distance_state)
         self.calibrator = self._load_calibrator(calib_path)
-        self.current_F: float = self._predict_F(self.board)
-        self.start_F: float = self.current_F
+        self.current_F: float | None = None
+        self.start_F: float | None = None
         self.total_delta_F: float = 0.0
 
         # Derived sizes
@@ -317,7 +317,6 @@ class SudokuEnv:
             model.load_state_dict(state)
         model.eval()
         _DIST_CACHE.update(model=model, model_path=path, device=str(device))
-        print(f"[pid {os.getpid()}] loaded distance model from {src} to {device} in {time.time()-t0:.2f}s", flush=True)
         return model
 
     def _load_calibrator(self, path: Path) -> IsotonicCalibrator:

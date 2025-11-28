@@ -5,8 +5,6 @@ import csv
 import json
 import random
 import re
-import time
-import os
 import pickle
 from functools import lru_cache
 from pathlib import Path
@@ -122,7 +120,6 @@ def _nearest_bin_for_target(target_zeros: int) -> str:
 
 
 def _load_from_csv(path: Path, label: str) -> List[dict]:
-    t0 = time.time()
     puzzles: List[dict] = []
     with path.open(newline="") as f:
         reader = csv.DictReader(f)
@@ -145,17 +142,14 @@ def _load_from_csv(path: Path, label: str) -> List[dict]:
             puzzles.append(entry)
     if not puzzles:
         raise ValueError(f"No puzzles loaded for bin '{label}' from {path}")
-    print(f"[pid {os.getpid()}] loaded {len(puzzles)} puzzles for {label} from CSV in {time.time()-t0:.2f}s", flush=True)
     return puzzles
 
 
 @lru_cache(maxsize=1)
 def _load_puzzle_pools() -> Dict[str, List[dict]]:
-    t0 = time.time()
     if PUZZLE_CACHE_PATH.exists():
         with PUZZLE_CACHE_PATH.open("rb") as f:
             pools = pickle.load(f)
-        print(f"[pid {os.getpid()}] loaded puzzle cache from {PUZZLE_CACHE_PATH} in {time.time()-t0:.2f}s", flush=True)
         return pools
 
     pools: Dict[str, List[dict]] = {}
@@ -169,8 +163,12 @@ def _load_puzzle_pools() -> Dict[str, List[dict]]:
 
     with PUZZLE_CACHE_PATH.open("wb") as f:
         pickle.dump(pools, f, protocol=pickle.HIGHEST_PROTOCOL)
-    print(f"[pid {os.getpid()}] built puzzle cache at {PUZZLE_CACHE_PATH} in {time.time()-t0:.2f}s", flush=True)
     return pools
+
+
+def preload_puzzle_cache() -> None:
+    """Build or load the cached puzzle pools so later sampling is disk-free."""
+    _load_puzzle_pools()
 
 
 def get_puzzle_pool(label: str) -> List[dict]:

@@ -36,12 +36,32 @@ from pufferlib import pufferl  # their trainer module
 from .make_vecenv import make_sudoku_vecenv
 from .sudoku_mlp import SudokuMLP
 from .env_puffer import SudokuPufferEnv
-from .puzzle import supported_bins
+from .puzzle import supported_bins, sample_puzzle, preload_puzzle_cache
 from .curriculum import build_default_buckets
 from .return_stats import SharedReturnStatsRegistry
 from pathlib import Path
 
 import imageio
+
+
+def _warm_start_resources(distance_state):
+    """Preload puzzle cache and distance model once in the parent process."""
+    preload_puzzle_cache()
+    # Touch distance model/calibrator once; failures are non-fatal.
+    try:
+        board, solution = sample_puzzle(return_solution=True, prev_mix_ratio=0.0)
+        from .env import SudokuEnv
+        env = SudokuEnv(
+            initial_board=board,
+            solution_board=solution,
+            max_steps=1,
+            distance_device="cpu",
+            distance_state=distance_state,
+        )
+        env.reset()
+    except Exception:
+        # Warm start is best-effort; ignore errors so training can proceed.
+        pass
 def _parse_bin(label: str) -> tuple[int, int]:
     parts = label.split("_")
     if len(parts) != 3:
@@ -80,8 +100,8 @@ def main():
     parser.add_argument("--bptt_horizon", type=int, default=128)
     parser.add_argument("--minibatch_size", type=int, default=4096)
     parser.add_argument("--backend", type=str, default="mp", choices=["serial", "mp"], help="Vecenv backend (curriculum currently expects serial)")
-    parser.add_argument("--num_workers", type=int, default=16, help="Workers for mp backend (set lower if you saturate cores)")
-    parser.add_argument("--vec_batch_size", type=int, default=256, help="Vecenv batch size for MP backend (controls worker barrier)")
+    parser.add_argument("--num_workers", type=int, default=8, help="Workers for mp backend (set lower if you saturate cores)")
+    parser.add_argument("--vec_batch_size", type=int, default=512, help="Vecenv batch size for MP backend (controls worker barrier)")
     parser.add_argument("--vec_zero_copy", action="store_true", default=False, help="Use zero_copy (contiguous workers, no memcpy). Default False to allow non-contiguous copies")
     parser.add_argument("--vec_overwork", action="store_true", default=False, help="Allow num_workers > physical cores (PufferLib overwork)")
     parser.add_argument("--log_every", type=int, default=50000, help="Print dashboard every N global steps")
@@ -160,7 +180,7 @@ def main():
     # to avoid each process reading from disk.
     distance_model_path = Path("experiments/distance_regressor.pt")
     distance_state = torch.load(distance_model_path, map_location="cpu")
-    print(f"[parent pid {os.getpid()}] loaded distance model state from {distance_model_path}", flush=True)
+    _warm_start_resources(distance_state)
 
     bins = list(supported_bins())
     if not bins:
@@ -177,7 +197,6 @@ def main():
         min_episodes_for_scale=50,
     )
     hardest_bin = bucket_defs[-1].bin_label
-    print(f"[parent pid {os.getpid()}] creating vecenv...", flush=True)
     vecenv = make_sudoku_vecenv(
         bucket_defs[0].bin_label,
         num_envs=args.num_envs,
@@ -200,7 +219,6 @@ def main():
             eps=0.05,
         ),
     )
-    print(f"[parent pid {os.getpid()}] vecenv created", flush=True)
 
     # Keep our Sudoku-specific policy instead of replacing it with the
     # default Breakout policy referenced by the PuffeRL config. We still
@@ -210,9 +228,7 @@ def main():
 
     # 4) Create PuffeRL trainer (inject TensorBoard logger if requested)
     tb_logger = TensorboardLogger(args.tb_logdir) if args.tb_logdir else None
-    print(f"[parent pid {os.getpid()}] building PuffeRL trainer", flush=True)
     algo = pufferl.PuffeRL(cfg["train"], vecenv, policy, logger=tb_logger)
-    print(f"[parent pid {os.getpid()}] trainer created", flush=True)
     # Patch SPS reporting to hold the last non-zero value instead of 0 when
     # logs happen too frequently (avoids misleading dashboard zeros).
     def _patched_sps(self):
@@ -236,7 +252,6 @@ def main():
             algo.print_dashboard()
             next_log += log_step
 
-    print("Training finished")
     if tb_logger:
         tb_logger.close()
     vecenv.close()
