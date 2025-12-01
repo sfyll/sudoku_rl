@@ -48,9 +48,9 @@ class SudokuEnv:
     """
 
     # Reward scalars (distance-driven)
-    SOLVE_BONUS: float = 10.0
-    WRONG_DIGIT_PENALTY: float = 3.0
-    UNSOLVABLE_PENALTY: float = 20.0
+    SOLVE_BONUS: float = 1.0
+    WRONG_DIGIT_PENALTY: float = 0.5
+    UNSOLVABLE_PENALTY: float = 0.7
 
     n_rows: int = 9
     n_cols: int = 9
@@ -78,6 +78,11 @@ class SudokuEnv:
         self.initial_empties: int = int(np.sum(self.board == 0))
         self.total_reward: float = 0.0
         self.wrong_digit_count: int = 0
+        # Episode-scaled reward terms; initialized to class defaults and
+        # overwritten in reset() once we know F_start.
+        self.wrong_digit_penalty: float = self.WRONG_DIGIT_PENALTY
+        self.solve_bonus: float = self.SOLVE_BONUS
+        self.unsolvable_penalty: float = self.UNSOLVABLE_PENALTY
 
         # Distance model + calibrator (loaded once).
         # Always keep the helper model on CPU to avoid CUDA initialization in
@@ -118,6 +123,7 @@ class SudokuEnv:
         self.current_F = self._predict_F(self.board)
         self.start_F = self.current_F
         self.total_delta_F = 0.0
+        self._set_episode_reward_scalars()
         return self.board.copy()
 
     def step(self, action: int) -> Tuple[Board, float, bool, Dict[str, Any]]:
@@ -141,7 +147,7 @@ class SudokuEnv:
             F_after = F_before
         elif digit != self.solution_board[row, col]:
             wrong_digit = True
-            reward -= self.WRONG_DIGIT_PENALTY
+            reward -= self.wrong_digit_penalty
             self.wrong_digit_count += 1
         else:
             # Apply legal, solution-consistent move
@@ -152,14 +158,14 @@ class SudokuEnv:
             reward += delta_F
 
             if self._is_solved():
-                reward += self.SOLVE_BONUS
+                reward += self.solve_bonus
                 solved_now = True
 
         # Unsolvable detection: if no legal actions remain and not solved
         if not solved_now and not illegal and not wrong_digit:
             # Cheap unsolvable detection without constructing full action mask
             if not self._has_any_legal_move():
-                reward -= self.UNSOLVABLE_PENALTY
+                reward -= self.unsolvable_penalty
 
         timeout = self.steps >= self.max_steps and not solved_now
 
@@ -353,6 +359,16 @@ class SudokuEnv:
     def _predict_F(self, board: Board) -> float:
         d = np.array([self._predict_distance(board)], dtype=np.float64)
         return float(self.calibrator.predict(d)[0])
+
+    def _set_episode_reward_scalars(self) -> None:
+        """
+        Scale terminal bonuses/penalties using the calibrated start distance.
+        Keeps rewards comparable across difficulty bins.
+        """
+
+        self.wrong_digit_penalty = 0.5
+        self.solve_bonus = 1 * self.start_F
+        self.unsolvable_penalty = 0.7 * self.start_F
 
 
 def legal_action_mask(board: Board) -> np.ndarray:

@@ -124,12 +124,12 @@ def test_solved_detection():
     assert obs[8, 8] == 9
     assert info["solved"] is True
     assert done is True
-    assert reward >= SudokuEnv.SOLVE_BONUS
+    assert reward >= env.solve_bonus
 
 
-def test_wrong_digit_ends_episode():
+def test_wrong_digit_is_penalized_and_episode_continues():
     """
-    Picking a locally legal but wrong digit should end the episode immediately.
+    Picking a locally legal but wrong digit should be penalized but not terminate.
     """
     board, solution = sample_puzzle(bin_label=supported_bins()[0], seed=0, return_solution=True)
     env = SudokuEnv(initial_board=board, solution_board=solution)
@@ -158,8 +158,8 @@ def test_wrong_digit_ends_episode():
 
     assert info["illegal"] is False
     assert info["wrong_digit"] is True
-    assert done is True
-    assert np.isclose(reward, -SudokuEnv.WRONG_DIGIT_PENALTY)
+    assert done is False
+    assert np.isclose(reward, -env.wrong_digit_penalty)
 
 
 def test_wrong_digit_against_solution_is_penalized():
@@ -193,7 +193,7 @@ def test_wrong_digit_against_solution_is_penalized():
     assert info["wrong_digit"] is True
     assert done is False  # termination disabled
     assert obs[row, col] == 0  # board unchanged on wrong-digit
-    assert np.isclose(reward, -SudokuEnv.WRONG_DIGIT_PENALTY)
+    assert np.isclose(reward, -env.wrong_digit_penalty)
 
 
 def test_env_handles_dataset_puzzle():
