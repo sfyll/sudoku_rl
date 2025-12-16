@@ -63,9 +63,28 @@ class SudokuPufferEnv(pufferlib.PufferEnv):
             self.bucket_defs = bucket_defs
         else:
             self.bucket_defs = [BucketDef(id=bin_label or "default", bin_label=bin_label or "default")]
-        allowed_keys = {"initial_unlocked", "window_size", "promote_threshold", "promote_thresholds", "min_episodes_for_decision", "alpha", "eps", "age_floor", "rng"}
+        allowed_keys = {
+            "initial_unlocked",
+            "window_size",
+            "min_episodes_for_decision",
+            "solve_threshold",
+            "clean_solve_threshold",
+            "wrong_digit_threshold",
+            "steps_per_empty_threshold",
+            "patience",
+            "rng",
+        }
         if curriculum_kwargs is None:
-            ck = {"initial_unlocked": 1, "window_size": 200, "min_episodes_for_decision": 1, "promote_threshold": 1.0}
+            ck = {
+                "initial_unlocked": 1,
+                "window_size": 200,
+                "min_episodes_for_decision": 1,
+                "solve_threshold": 1.0,
+                "clean_solve_threshold": 1.0,
+                "wrong_digit_threshold": 0.0,
+                "steps_per_empty_threshold": 1.0,
+                "patience": 1,
+            }
         else:
             ck = {k: v for k, v in curriculum_kwargs.items() if k in allowed_keys}
             if len(self.bucket_defs) == 1:
@@ -173,6 +192,9 @@ class SudokuPufferEnv(pufferlib.PufferEnv):
             self.last_summary = EpisodeSummary(
                 solved=solved_flag,
                 clean_solve=solved_flag and self.env.wrong_digit_count == 0,
+                wrong_digit_count=int(self.env.wrong_digit_count),
+                initial_empties=int(self.env.initial_empties),
+                start_F=float(start_F),
                 total_return=float(total_return_scaled),
                 total_return_raw=float(total_return_raw),
                 length=int(steps_in_episode),
@@ -183,6 +205,8 @@ class SudokuPufferEnv(pufferlib.PufferEnv):
                 self.curriculum.update_after_episode(self.current_bucket_index, self.last_summary)
             self.return_min_seen = total_return_scaled if self.return_min_seen is None else min(self.return_min_seen, total_return_scaled)
             self.return_max_seen = total_return_scaled if self.return_max_seen is None else max(self.return_max_seen, total_return_scaled)
+
+            curriculum_logs = self.curriculum.metrics() if self.curriculum is not None else {}
 
             infos = [{
                 "env/cumulative_reward": total_return_scaled,
@@ -200,6 +224,7 @@ class SudokuPufferEnv(pufferlib.PufferEnv):
                 "env/start_F_mean": float(start_F),
                 "env/avg_delta_F_per_episode": float(delta_F_sum / max(1, steps_in_episode)),
                 "curriculum/max_unlocked_index": float(self.curriculum.max_unlocked_index if self.curriculum else self.curriculum_stage),
+                **curriculum_logs,
             }]
 
             # Leave observations as-is; Serial backend will call reset

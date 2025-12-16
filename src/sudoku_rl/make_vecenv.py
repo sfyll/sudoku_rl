@@ -39,8 +39,12 @@ def make_sudoku_vecenv(
         env_kwargs["curriculum_kwargs"] = {
             "initial_unlocked": 1,
             "window_size": 200,
-            "promote_threshold": 1.0,
             "min_episodes_for_decision": 1,
+            "solve_threshold": 1.0,
+            "clean_solve_threshold": 1.0,
+            "wrong_digit_threshold": 0.0,
+            "steps_per_empty_threshold": 1.0,
+            "patience": 1,
         }
     if shared_return_stats is not None:
         env_kwargs["shared_return_stats"] = shared_return_stats

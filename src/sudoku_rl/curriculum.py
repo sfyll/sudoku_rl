@@ -25,6 +25,9 @@ class EpisodeSummary:
 
     solved: bool
     clean_solve: bool
+    wrong_digit_count: int
+    initial_empties: int
+    start_F: float
     total_return: float          # scaled return (fed to learner/logs)
     total_return_raw: float      # unscaled MDP return (for external scaling stats)
     length: int
@@ -38,8 +41,11 @@ class BucketStats:
         self.history: Deque[EpisodeSummary] = deque()
         self._solved = 0
         self._clean = 0
+        self._wrong_episodes = 0
         self._return_sum = 0.0
         self._length_sum = 0
+        self._steps_per_empty_sum = 0.0
+        self._start_F_sum = 0.0
 
     # --- Properties ---
     @property
@@ -62,20 +68,38 @@ class BucketStats:
     def avg_length(self) -> float:
         return self._length_sum / self.n if self.n else 0.0
 
+    @property
+    def wrong_digit_rate(self) -> float:
+        return self._wrong_episodes / self.n if self.n else 0.0
+
+    @property
+    def steps_per_empty(self) -> float:
+        return self._steps_per_empty_sum / self.n if self.n else 0.0
+
+    @property
+    def start_F_mean(self) -> float:
+        return self._start_F_sum / self.n if self.n else 0.0
+
     # --- Mutations ---
     def add(self, summary: EpisodeSummary) -> None:
         self.history.append(summary)
         self._solved += int(summary.solved)
         self._clean += int(summary.clean_solve)
+        self._wrong_episodes += int(summary.wrong_digit_count > 0)
         self._return_sum += summary.total_return
         self._length_sum += summary.length
+        self._steps_per_empty_sum += summary.length / max(1, summary.initial_empties)
+        self._start_F_sum += summary.start_F
 
         if self.n > self.window_size:
             old = self.history.popleft()
             self._solved -= int(old.solved)
             self._clean -= int(old.clean_solve)
+            self._wrong_episodes -= int(old.wrong_digit_count > 0)
             self._return_sum -= old.total_return
             self._length_sum -= old.length
+            self._steps_per_empty_sum -= old.length / max(1, old.initial_empties)
+            self._start_F_sum -= old.start_F
 
     def to_logging_dict(self, prefix: str) -> Dict[str, float]:
         return {
@@ -83,6 +107,9 @@ class BucketStats:
             f"{prefix}/clean_solve_rate": self.clean_solve_rate,
             f"{prefix}/avg_return": self.avg_return,
             f"{prefix}/avg_length": self.avg_length,
+            f"{prefix}/wrong_digit_rate": self.wrong_digit_rate,
+            f"{prefix}/steps_per_empty": self.steps_per_empty,
+            f"{prefix}/start_F_mean": self.start_F_mean,
         }
 
 
@@ -100,12 +127,13 @@ class CurriculumManager:
         *,
         initial_unlocked: int = 2,
         window_size: int = 200,
-        promote_threshold: float = 0.70,
-        promote_thresholds: Optional[Sequence[float]] = None,
         min_episodes_for_decision: int = 100,
-        alpha: float = 2.0,
-        eps: float = 0.05,
-        age_floor: float = 0.02,
+        # Frontier unlock thresholds
+        solve_threshold: float = 0.95,
+        clean_solve_threshold: float = 0.60,
+        wrong_digit_threshold: float = 0.10,
+        steps_per_empty_threshold: float = 1.5,
+        patience: int = 3,
         rng: random.Random | None = None,
     ) -> None:
         if initial_unlocked < 1:
@@ -115,12 +143,12 @@ class CurriculumManager:
 
         self.bucket_defs: List[BucketDef] = list(bucket_defs)
         self.window_size = window_size
-        self.promote_threshold = promote_threshold
-        self.promote_thresholds = list(promote_thresholds) if promote_thresholds is not None else None
         self.min_episodes_for_decision = min_episodes_for_decision
-        self.alpha = alpha
-        self.eps = eps
-        self.age_floor = age_floor
+        self.solve_threshold = solve_threshold
+        self.clean_solve_threshold = clean_solve_threshold
+        self.wrong_digit_threshold = wrong_digit_threshold
+        self.steps_per_empty_threshold = steps_per_empty_threshold
+        self.patience = patience
         self.rng = rng or random.Random()
 
         # State
@@ -130,39 +158,45 @@ class CurriculumManager:
         self.max_unlocked_index = initial_unlocked - 1
         self.stats: List[BucketStats] = [BucketStats(window_size) for _ in bucket_defs]
         self.total_episodes = 0
+        self._frontier_streak = 0
 
     # --- Sampling ---
-    def _clamped_solve_rate(self, idx: int) -> float:
-        # Use clean solve rate as proficiency signal; raw solve_rate can be
-        # misleading if the agent "solves" after many wrong digits.
-        p = self.stats[idx].clean_solve_rate
-        return max(self.eps, min(1 - self.eps, p))
-
-    def _sampling_weight(self, idx: int) -> float:
-        p = self._clamped_solve_rate(idx)
-        age = max(self.age_floor, min(1.0, (self.stats[idx].n / self.window_size) ** 0.5))
-        w = (1.0 - p) ** self.alpha
-        w *= age
-        return w
-
     def choose_bucket(self) -> int:
-        unlocked = [i for i, locked in enumerate(self._locked) if not locked]
-        if not unlocked:
-            unlocked = [0]
+        k = self.max_unlocked_index
+        if k <= 0:
+            return 0
 
-        weights = [self._sampling_weight(i) for i in unlocked]
-        if not any(weights):
-            weights = [1.0] * len(unlocked)
-
-        return self.rng.choices(unlocked, weights=weights, k=1)[0]
+        r = self.rng.random()
+        if r < 0.60:
+            return k
+        elif r < 0.85:
+            return k - 1
+        else:
+            if k - 1 <= 0:
+                return 0
+            return self.rng.randint(0, k - 2)
 
     # --- Updates ---
     def update_after_episode(self, bucket_idx: int, summary: EpisodeSummary) -> None:
         self.stats[bucket_idx].add(summary)
         self.total_episodes += 1
-        self._maybe_promote(bucket_idx)
+        if bucket_idx == self.max_unlocked_index:
+            self._maybe_promote_frontier()
 
-    def _maybe_promote(self, idx: int) -> None:
+    def _frontier_metrics(self) -> Dict[str, float]:
+        idx = self.max_unlocked_index
+        stats = self.stats[idx]
+        return {
+            "solve_rate": stats.solve_rate,
+            "clean_solve_rate": stats.clean_solve_rate,
+            "wrong_digit_rate": stats.wrong_digit_rate,
+            "steps_per_empty": stats.steps_per_empty,
+            "start_F_mean": stats.start_F_mean,
+            "episodes": float(stats.n),
+        }
+
+    def _maybe_promote_frontier(self) -> None:
+        idx = self.max_unlocked_index
         next_idx = idx + 1
         if next_idx >= len(self.bucket_defs):
             return
@@ -171,19 +205,22 @@ class CurriculumManager:
         stats = self.stats[idx]
         if stats.n < self.min_episodes_for_decision:
             return
-        threshold = self._threshold_for(idx)
-        if stats.clean_solve_rate < threshold:
+        if (
+            stats.solve_rate >= self.solve_threshold
+            and stats.clean_solve_rate >= self.clean_solve_threshold
+            and stats.wrong_digit_rate <= self.wrong_digit_threshold
+            and stats.steps_per_empty <= self.steps_per_empty_threshold
+        ):
+            self._frontier_streak += 1
+        else:
+            self._frontier_streak = 0
+
+        if self._frontier_streak < self.patience:
             return
 
+        self._frontier_streak = 0
         self._locked[next_idx] = False
         self.max_unlocked_index = max(self.max_unlocked_index, next_idx)
-
-    def _threshold_for(self, idx: int) -> float:
-        if self.promote_thresholds:
-            if idx < len(self.promote_thresholds):
-                return self.promote_thresholds[idx]
-            return self.promote_thresholds[-1]
-        return self.promote_threshold
 
     # --- Logging ---
     def metrics(self) -> Dict[str, float]:
@@ -199,7 +236,25 @@ class CurriculumManager:
         for i, (bucket, stats) in enumerate(zip(self.bucket_defs, self.stats)):
             prefix = f"bucket_{i}_{bucket.id}"
             out.update(stats.to_logging_dict(prefix))
-            out[f"{prefix}/sampling_weight"] = self._sampling_weight(i)
+
+            # Mirror key bin-level stats under env/ for easier TensorBoard filtering
+            env_prefix = f"env/bin_{i}"
+            out[f"{env_prefix}/solve_rate"] = stats.solve_rate
+            out[f"{env_prefix}/clean_solve_rate"] = stats.clean_solve_rate
+            out[f"{env_prefix}/wrong_digit_rate"] = stats.wrong_digit_rate
+            out[f"{env_prefix}/steps_per_empty"] = stats.steps_per_empty
+            out[f"{env_prefix}/start_F_mean"] = stats.start_F_mean
+            out[f"{env_prefix}/episodes"] = float(stats.n)
+
+        # Frontier-only diagnostics
+        frontier = self._frontier_metrics()
+        out.update({
+            "env/frontier_solve_rate": frontier["solve_rate"],
+            "env/frontier_clean_solve_rate": frontier["clean_solve_rate"],
+            "env/frontier_wrong_digit_rate": frontier["wrong_digit_rate"],
+            "env/frontier_steps_per_empty": frontier["steps_per_empty"],
+            "env/frontier_start_F_mean": frontier["start_F_mean"],
+        })
         return out
 
 

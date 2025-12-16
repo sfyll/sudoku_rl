@@ -266,10 +266,12 @@ def main():
     curriculum_kwargs = dict(
         initial_unlocked=2,
         window_size=200,
-        promote_thresholds=[0.9, 0.8, 0.6],
         min_episodes_for_decision=100,
-        alpha=2.0,
-        eps=0.05,
+        solve_threshold=0.95,
+        clean_solve_threshold=0.60,
+        wrong_digit_threshold=0.10,
+        steps_per_empty_threshold=1.5,
+        patience=3,
     )
 
     # Quick “is promotion even feasible?” check before we start.
